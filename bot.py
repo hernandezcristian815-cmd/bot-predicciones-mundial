@@ -23,89 +23,97 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot Predictivo PRO Automatizado en Vivo", 200
+    return "Bot Predictivo PRO Internacional en Vivo", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-# Ligas principales (Champions=2, Premier=39, LaLiga=140, Serie A=135, Colombia=239)
-LEAGUE_IDS = [2, 39, 140, 135, 239]
+# Palabras clave para filtrar de forma inteligente las competiciones de alto valor e importancia internacional
+PALABRAS_COMPETICION_TOP = [
+    "friendlies", "international", "world cup", "euro", "copa america", "champions league", 
+    "europa league", "premier league", "primera division", "liga betplay", "serie a", 
+    "bundesliga", "ligue 1", "copa libertadores", "copa sudamericana", "liga mx"
+]
 
-def consultar_api_por_fecha(fecha_str):
-    """Consulta la API de Fútbol para una fecha específica en formato YYYY-MM-DD"""
+def consultar_cartelera_importante(fecha_str):
+    """Consulta todos los partidos del día y filtra dinámicamente los más importantes y comerciales"""
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {
         'x-rapidapi-host': 'v3.football.api-sports.io',
         'x-rapidapi-key': API_FOOTBALL_KEY
     }
-    partidos_encontrados = []
+    params = {'date': fecha_str}
+    partidos_filtrados = []
     
-    for league_id in LEAGUE_IDS:
-        params = {'date': fecha_str, 'league': league_id}
-        try:
-            response = requests.get(url, headers=headers, params=params, timeout=10).json()
-            if "response" in response:
-                for item in response["response"]:
-                    partidos_encontrados.append({
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=12).json()
+        if "response" in response and response["response"]:
+            for item in response["response"]:
+                nombre_liga = item["league"]["name"].lower()
+                
+                # Filtrar solo si pertenece a una competición o categoría de alto interés comercial
+                if any(palabra in nombre_liga for palabra in PALABRAS_COMPETICION_TOP):
+                    partidos_filtrados.append({
                         "home": item["teams"]["home"]["name"],
-                        "away": item["teams"]["away"]["name"]
+                        "away": item["teams"]["away"]["name"],
+                        "league": item["league"]["name"]
                     })
-        except Exception as e:
-            print(f"Error consultando liga {league_id} en fecha {fecha_str}: {e}")
-            
-    return partidos_encontrados
+    except Exception as e:
+        print(f"Error consultando cartelera global: {e}")
+        
+    return partidos_filtrados
 
-# Comando /start o /ayuda para ver la lista de comandos
+# Comando /start o /ayuda
 @bot.message_handler(commands=['start', 'ayuda', 'help'])
 def enviar_lista_comandos(message):
     texto_ayuda = (
         "🤖 *¡Bienvenido al Centro de Analítica Deportiva IA!*\n\n"
-        "Aquí tienes la lista de comandos disponibles para el grupo:\n\n"
-        "⚽ `/polla` o `/partidos` \- Consulta la cartelera futbolera real (busca hoy y si no hay, te muestra mañana) con botones interactivos\.\n"
-        "ℹ️ `/ayuda` o `/start` \- Despliega este menú de asistencia con los comandos disponibles\.\n\n"
-        "_Selecciona un partido desde el menú interactivo para recibir un informe profundo de apuestas (Goles, Córners, Tarjetas y Marcador)_"
+        "Aquí tienes los comandos para interactuar en el grupo:\n\n"
+        "⚽ `/polla` o `/partidos` \- Despliega los partidos más importantes del planeta \(Selecciones, Copas y Ligas Top\) con botones interactivos\.\n"
+        "ℹ️ `/ayuda` o `/start` \- Muestra este menú de asistencia\.\n\n"
+        "_Presiona el botón de cualquier partido para generar el informe matemático avanzado para tus apuestas\._"
     )
     bot.send_message(message.chat.id, texto_ayuda, parse_mode="MarkdownV2")
 
-# Comando /polla o /partidos con lógica inteligente hoy/mañana
+# Comando /polla o /partidos mejorado
 @bot.message_handler(commands=['polla', 'partidos'])
 def enviar_menu_dinamico(message):
-    bot.send_message(message.chat.id, "🔍 Buscando partidos en la base de datos de la API...")
+    bot.send_message(message.chat.id, "🔍 Analizando el calendario global de partidos importantes...")
     
     ahora = datetime.datetime.now()
     fecha_hoy = ahora.strftime('%Y-%m-%d')
     fecha_manana = (ahora + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
     
-    # 1. Intentar buscar partidos de HOY
-    lista_partidos = consultar_api_por_fecha(fecha_hoy)
-    titulo_menu = "⚽ *¡Cartelera de HOY\!*"
+    # 1. Buscar cartelera filtrada de Hoy
+    lista_partidos = consultar_cartelera_importante(fecha_hoy)
+    titulo_menu = "⚽ *¡Cartelera de HOY \(Competiciones Top\)\!*"
     
-    # 2. Si no hay partidos hoy, saltar automáticamente a MAÑANA
+    # 2. Si hoy ya se cerró la jornada, saltar automáticamente a Mañana
     if not lista_partidos:
-        print("No se encontraron partidos para hoy, buscando cartelera de mañana...")
-        lista_partidos = consultar_api_por_fecha(fecha_manana)
-        titulo_menu = "🗓️ *Sin partidos hoy. ¡Cartelera de MAÑANA\!*"
+        print("No hay más partidos top hoy, consultando la agenda de mañana...")
+        lista_partidos = consultar_cartelera_importante(fecha_manana)
+        titulo_menu = "🗓️ *Agenda de MAÑANA \(Partidos Principales\)\!*"
         
     if not lista_partidos:
-        bot.send_message(message.chat.id, "⏳ Por el momento no se reportan encuentros disponibles para hoy ni mañana en las ligas principales.")
+        bot.send_message(message.chat.id, "⏳ En este momento no se registran partidos comerciales de gran calibre programados para hoy ni mañana.")
         return
         
     markup = InlineKeyboardMarkup()
     markup.row_width = 1
     
-    # Generamos los botones cuidando el límite de 64 bytes de Telegram en el callback
-    for i, partido in enumerate(lista_partidos[:15]): # Límite de 15 botones para no saturar
-        home_corto = partido['home'][:25]
-        away_corto = partido['away'][:25]
-        texto_boton = f"{partido['home']} vs. {partido['away']}"
-        callback_data = f"p_{i}_{home_corto} vs {away_corto}"[:60]
+    # Generamos los botones con un límite máximo de 18 para no saturar el chat de Telegram
+    for i, partido in enumerate(lista_partidos[:18]):
+        home_corto = partido['home'][:22]
+        away_corto = partido['away'][:22]
+        texto_boton = f"{partido['home']} vs. {partido['away']} ({partido['league'][:15]})"
+        callback_data = f"p_{i}_{home_corto}?{away_corto}"[:64]
         
         markup.add(InlineKeyboardButton(texto_boton, callback_data=callback_data))
         
     bot.send_message(
         message.chat.id, 
-        f"{titulo_menu}\nSelecciona un encuentro para desplegar el análisis avanzado de apuestas con IA:", 
+        f"{titulo_menu}\nSelecciona un encuentro para desplegar el análisis predictivo avanzado de apuestas con IA:", 
         parse_mode="MarkdownV2", 
         reply_markup=markup
     )
@@ -116,15 +124,16 @@ def procesar_prediccion_ia(call):
     bot.answer_callback_query(call.id, text="Calculando Big Data, córners y tarjetas...")
     
     try:
-        # Extraer el texto del partido limpiando el índice de control
-        partido_nombre = call.data.split('_', 2)[-1]
+        # Extraer los nombres limpios del callback
+        partido_datos = call.data.split('_', 2)[-1]
+        home_team, away_team = partido_datos.split('?')
         
         prompt = (
             f"Actúa como un tipster profesional, experto en Big Data de fútbol y analítica deportiva avanzada. "
-            f"Genera un reporte de apuestas ultra profundo y realista para el partido: {partido_nombre}.\n\n"
-            f"Basándote en tu conocimiento estadístico e histórico global, calcula las probabilidades reales "
+            f"Genera un reporte de apuestas ultra profundo y realista para el partido de fútbol: {home_team} vs {away_team}.\n\n"
+            f"Basándote en tu conocimiento estadístico e histórico global de estos equipos/selecciones, calcula las probabilidades reales "
             f"y estructura tu respuesta EXACTAMENTE con el siguiente formato Markdown para Telegram (usa emojis y negritas):\n\n"
-            f"📊 *REPORTE PRO IA: [Nombre del Partido]*\n\n"
+            f"📊 *REPORTE PRO IA: {home_team} vs. {away_team}*\n\n"
             f"💰 *PROBABILIDADES 1X2:*\n"
             f"• Victoria Local: [X]% 🟢\n"
             f"• Empate: [Y]% 🟡\n"
@@ -140,24 +149,23 @@ def procesar_prediccion_ia(call):
             f"🔥 *TOP 3 TIPS DE APUESTAS DE ALTO VALOR:*\n"
             f"1️⃣ [Tip principal, ej: Ganador Local o Empate]\n"
             f"2️⃣ [Tip de goles o córners, ej: Más de 8.5 córners]\n"
-            f"3️⃣ [Tip arriesgado de alta cuota, ej: Local anota en el 2do tiempo]\n\n"
-            f"_*Nota: Análisis matemático basado en tendencias estadísticas de rendimiento actual\._"
+            f"3️⃣ [Tip arriesgado de alta cuota, ej: Ambos anotan en el 2do tiempo]\n\n"
+            f"_*Nota: Análisis matemático basado en tendencias estadísticas globales\._"
         )
         
         response = model.generate_content(prompt)
         analisis_final = response.text
         
-        # Reemplazar puntos sueltos para evitar que se rompa el MarkdownV2 de Telegram si es necesario
         bot.send_message(call.message.chat.id, analisis_final, parse_mode="Markdown")
         
     except Exception as e:
         print(f"Error procesando la IA Avanzada: {e}")
-        bot.send_message(call.message.chat.id, "❌ No logré procesar el análisis detallado en este momento. Inténtalo de nuevo.")
+        bot.send_message(call.message.chat.id, "❌ No logré procesar el análisis detallado. Inténtalo de nuevo.")
 
 if __name__ == "__main__":
     print("Iniciando servidor web...")
     server_thread = Thread(target=run_flask)
     server_thread.start()
     
-    print("Bot interactivo con IA PRO corriendo...")
+    print("Bot interactivo con IA PRO Internacional corriendo...")
     bot.infinity_polling()
