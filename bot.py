@@ -1,4 +1,5 @@
 import os
+import json
 import datetime
 import requests
 import telebot
@@ -107,11 +108,11 @@ def enviar_menu_dinamico(message):
     except Exception as e:
         print(f"Error en menú: {e}")
 # ==========================================
-# 4. MOTOR ESTADÍSTICO MATEMÁTICO AVANZADO (5 PARTIDOS + DEEP STATS)
+# 4. MOTOR ESTADÍSTICO MATEMÁTICO (EXTRACCIÓN JSON ESTRICTA)
 # ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('c_'))
 def procesar_prediccion_ia(call):
-    bot.answer_callback_query(call.id, text="Procesando 5 partidos y estadísticas profundas...")
+    bot.answer_callback_query(call.id, text="Procesando datos estadísticos reales...")
     
     try:
         partes = call.data.split('_')
@@ -125,7 +126,7 @@ def procesar_prediccion_ia(call):
             'x-rapidapi-key': API_FOOTBALL_KEY
         }
 
-        # 1. EXTRACCIÓN DE 5 PARTIDOS REALES (API DE FÚTBOL)
+        # 1. EXTRACCIÓN DE 5 PARTIDOS REALES DE LA API
         try:
             local_data = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": home_id, "last": 5}, timeout=8).json()
             visit_data = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": away_id, "last": 5}, timeout=8).json()
@@ -148,31 +149,36 @@ def procesar_prediccion_ia(call):
                     goles_recientes += (g_h + g_a)
                     partidos_contados += 1
                     res_str += f"▫️ {h_team} {g_h}-{g_a} {a_team}\n"
-            return res_str if res_str else "Sin datos."
+            return res_str if res_str else "⚠️ La API no tiene historial reciente."
 
         historial_local = formatear_resultados(local_data)
         historial_visit = formatear_resultados(visit_data)
 
-        # 2. DATA MINING CON IA (Promedios profundos sin gastar cuota de API)
+        # 2. IA COMO MINERO DE DATOS (FORMATO JSON OBLIGATORIO)
         prompt = f"""
-        Actúa como base de datos deportiva. Analiza el estilo de juego general de {home_name} y {away_name}.
-        Devuelve ÚNICAMENTE los siguientes valores puros basados en promedios y conocimientos tácticos.
-        PROHIBIDO usar texto, Markdown o explicaciones. Solo el formato exacto clave:valor.
+        Actúa como analista de datos. Analiza estadísticamente a {home_name} y {away_name}.
+        Debes responder ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni bloques de código markdown.
+        Si no conoces un dato exacto, estima el promedio realista de ese equipo.
         
-        corners: [numero decimal promedio del partido]
-        tarjetas: [numero decimal promedio del partido]
-        atajadas: [numero decimal promedio de atajadas por partido]
-        prob_local: [numero entero 0-100]
-        prob_visit: [numero entero 0-100]
-        prob_empate: [numero entero 0-100]
-        goleador_local: [Apellido del mejor jugador/goleador]
-        goleador_visitante: [Apellido del mejor jugador/goleador]
+        Formato estricto a usar:
+        {{
+            "corners": 9.2,
+            "tarjetas": 4.5,
+            "atajadas": 5.8,
+            "prob_local": 45,
+            "prob_visit": 30,
+            "prob_empate": 25,
+            "goleador_local": "Apellido Jugador",
+            "goleador_visitante": "Apellido Jugador"
+        }}
         """
 
-        # Variables por defecto (Seguro matemático)
-        corners, tarjetas, atajadas = 9.5, 4.5, 6.0
-        p_loc, p_vis, p_emp = 40, 35, 25
-        goleador_loc, goleador_vis = "Delantero", "Delantero"
+        # Variables por defecto en caso de caída total del servidor de Google
+        datos_ia = {
+            "corners": 8.5, "tarjetas": 4.0, "atajadas": 5.0,
+            "prob_local": 35, "prob_visit": 35, "prob_empate": 30,
+            "goleador_local": "No definido", "goleador_visitante": "No definido"
+        }
 
         url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -181,56 +187,41 @@ def procesar_prediccion_ia(call):
             res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=12).json()
             if "candidates" in res:
                 texto_ia = res["candidates"][0]["content"]["parts"][0]["text"].strip()
+                # Limpiamos el texto por si la IA le pone comillas de código (```json)
+                texto_ia = texto_ia.replace("```json", "").replace("```", "").strip()
                 
-                # Parseador avanzado de Python
-                for linea in texto_ia.split('\n'):
-                    if ':' in linea:
-                        clave, valor = linea.split(':', 1)
-                        clave = clave.strip().lower()
-                        valor_str = valor.strip()
-                        
-                        if 'goleador_local' in clave: goleador_loc = valor_str.title()
-                        elif 'goleador_visitante' in clave: goleador_vis = valor_str.title()
-                        else:
-                            try:
-                                num = float("".join(c for c in valor_str if c.isdigit() or c == '.'))
-                                if 'corners' in clave: corners = num
-                                elif 'tarjetas' in clave: tarjetas = num
-                                elif 'atajadas' in clave: atajadas = num
-                                elif 'prob_local' in clave: p_loc = num
-                                elif 'prob_visit' in clave: p_vis = num
-                                elif 'prob_empate' in clave: p_emp = num
-                            except:
-                                pass
+                # Convertimos el texto estricto a variables reales de Python
+                datos_ia.update(json.loads(texto_ia))
         except Exception as e:
-            print(f"Error en Data-Mining: {e}")
+            print(f"Error procesando JSON de la IA: {e}")
 
-        # 3. LÓGICA MATEMÁTICA PURA
-        total_prob = p_loc + p_vis + p_emp
+        # 3. LÓGICA MATEMÁTICA
+        total_prob = datos_ia["prob_local"] + datos_ia["prob_visit"] + datos_ia["prob_empate"]
         if total_prob > 0:
-            p_loc = round((p_loc / total_prob) * 100)
-            p_vis = round((p_vis / total_prob) * 100)
+            p_loc = round((datos_ia["prob_local"] / total_prob) * 100)
+            p_vis = round((datos_ia["prob_visit"] / total_prob) * 100)
             p_emp = 100 - (p_loc + p_vis)
 
-        promedio_goles = round(goles_recientes / partidos_contados, 1) if partidos_contados > 0 else 2.5
+        promedio_goles = round(goles_recientes / partidos_contados, 1) if partidos_contados > 0 else 2.0
         linea_goles = "Over 2.5 🔥" if promedio_goles > 2.2 else "Under 2.5 🧊"
         ambos_anotan = "Sí ⚽" if promedio_goles >= 2.0 and p_emp > 20 else "No 🚫"
 
         if p_loc >= 45:
             pick = f"Gana {home_name}"
             confianza = "Alta 🟢"
-            marcador = "2-0 o 2-1"
         elif p_vis >= 45:
             pick = f"Gana {away_name}"
             confianza = "Alta 🟢"
-            marcador = "0-1 o 1-2"
         else:
             pick = "Doble Oportunidad o Empate"
             confianza = "Media 🟡"
-            marcador = "1-1 o 0-0"
 
-        # 4. CONSTRUCCIÓN DEL REPORTE PRO
-        reporte = f"📊 **ANÁLISIS ESTADÍSTICO PRO (5 PARTIDOS)**\n"
+        # Si la API no trajo partidos, la confianza baja automáticamente
+        if partidos_contados == 0:
+            confianza = "Baja 🔴 (Sin datos oficiales API)"
+
+        # 4. CONSTRUCCIÓN DEL REPORTE FINAL
+        reporte = f"📊 **ANÁLISIS ESTADÍSTICO PRO**\n"
         reporte += f"⚽ *{home_name} vs {away_name}*\n\n"
         
         reporte += f"📈 **Probabilidades Matemáticas:**\n"
@@ -242,13 +233,13 @@ def procesar_prediccion_ia(call):
         reporte += f"🎯 **Líneas Calculadas para Apuestas:**\n"
         reporte += f"• Promedio Goles: {promedio_goles}\n"
         reporte += f"• Ambos Anotan: {ambos_anotan}\n"
-        reporte += f"• Tiros de Esquina: Más de {corners}\n"
-        reporte += f"• Tarjetas Totales: Más de {tarjetas}\n"
-        reporte += f"• Atajadas (Porteros): Más de {atajadas}\n\n"
+        reporte += f"• Tiros de Esquina: Más de {datos_ia.get('corners', 8.5)}\n"
+        reporte += f"• Tarjetas Totales: Más de {datos_ia.get('tarjetas', 4.0)}\n"
+        reporte += f"• Atajadas (Porteros): Más de {datos_ia.get('atajadas', 5.0)}\n\n"
 
-        reporte += f"⭐ **Jugadores a seguir (Posibles Goleadores):**\n"
-        reporte += f"• {home_name}: {goleador_loc}\n"
-        reporte += f"• {away_name}: {goleador_vis}\n\n"
+        reporte += f"⭐ **Jugadores Clave (Posibles Anotadores):**\n"
+        reporte += f"• {home_name}: {datos_ia.get('goleador_local', 'N/A')}\n"
+        reporte += f"• {away_name}: {datos_ia.get('goleador_visitante', 'N/A')}\n\n"
         
         reporte += f"💰 **PICK DEL ALGORITMO:** {pick}\n"
         reporte += f"⚡ **Confianza:** {confianza}"
@@ -257,44 +248,46 @@ def procesar_prediccion_ia(call):
 
     except Exception as e:
         print(f"Error crítico: {e}")
-        bot.send_message(call.message.chat.id, f"❌ Error interno procesando estadísticas: {str(e)}")
+        bot.send_message(call.message.chat.id, f"❌ Error interno procesando estadísticas.")
+
 # ==========================================
-# 5. RASTREADOR DE TEXTO LIBRE (REPARADO)
+# 5. RASTREADOR DE TEXTO LIBRE (CORREGIDO)
 # ==========================================
 @bot.message_handler(func=lambda message: True)
 def buscar_equipo_libre(message):
     texto = message.text.lower()
-    if "datos de" in texto or "estadisticas de" in texto:
-        equipo = message.text.replace("datos de", "").replace("datos de", "").replace("estadísticas de", "").strip()
+    
+    # Arreglamos el validador para que extraiga el nombre del equipo correctamente
+    if texto.startswith("datos de "):
+        equipo = message.text[9:].strip() # Corta exactamente los primeros 9 caracteres ("Datos de ")
+        
         if not equipo:
-            bot.reply_to(message, "Escribe el nombre del club. Ejemplo: `datos de Boca Juniors`")
+            bot.reply_to(message, "Escribe el nombre del club. Ejemplo: `datos de Colombia`")
             return
             
-        bot.reply_to(message, f"🌐 Rastreando internet y analizando a *{equipo}*...", parse_mode="Markdown")
+        bot.reply_to(message, f"🌐 Buscando estadísticas y actualidad de *{equipo}*...", parse_mode="Markdown")
         
         try:
-            contexto = ""
+            contexto = "No hubo resultados web."
             try:
                 with DDGS() as ddgs:
-                    for r in ddgs.text(f"{equipo} actualidad ultimos resultados futbol apuestas", max_results=3):
-                        contexto += f"{r['title']}: {r['body']}\n"
+                    resultados = list(ddgs.text(f"{equipo} actualidad futbol ultimos partidos", max_results=2))
+                    if resultados:
+                        contexto = "\n".join([f"{r['title']}: {r['body']}" for r in resultados])
             except:
-                contexto = "No se pudo acceder a noticias en vivo por límite de búsquedas, usa tu conocimiento general del equipo."
+                pass
             
-            prompt = f"Actúa como un analista deportivo. Basado en tu base de datos y esta info reciente si la hay: {contexto}. Escribe un resumen táctico de apuestas para {equipo}. Incluye promedios típicos de córners, estilo de juego, y si son un equipo tarjetero o limpio. Usa Markdown y emojis."
+            prompt = f"Actúa como analista deportivo experto. Analiza a la selección o equipo: {equipo}. \nNoticias recientes si aplican: {contexto}. \nEscribe un perfil táctico resumido, estilo de juego, jugadores destacados actuales y recomendaciones para apuestas en Markdown."
             
-            url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+            url_gemini = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){GEMINI_KEY}"
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=12).json()
+            res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=15).json()
             
             if "candidates" in res:
                 respuesta_texto = res["candidates"][0]["content"]["parts"][0]["text"]
                 bot.send_message(message.chat.id, respuesta_texto, parse_mode="Markdown")
             else:
-                bot.send_message(message.chat.id, f"❌ Google IA bloqueó la respuesta o no hay datos para {equipo}.")
+                error_real = str(res.get("error", "Error desconocido de IA"))
+                bot.send_message(message.chat.id, f"❌ Google IA bloqueó la respuesta. Motivo:\n`{error_real}`", parse_mode="Markdown")
         except Exception as e:
-            bot.reply_to(message, "❌ Error de conexión al procesar el resumen de este equipo.")
-
-if __name__ == "__main__":
-    Thread(target=run_flask).start()
-    bot.infinity_polling()
+            bot.reply_to(message, "❌ Error de conexión al procesar el resumen.")
