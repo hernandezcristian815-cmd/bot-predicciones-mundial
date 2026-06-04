@@ -147,7 +147,7 @@ def procesar_prediccion_ia(call):
         historial_local = formatear_resultados(local_data)
         historial_visit = formatear_resultados(visit_data)
 
-        # PROMPT PARA LA IA CON CONEXIÓN DIRECTA (Sin errores 404)
+        # PROMPT PARA LA IA
         prompt = f"""
         Actúa como un tipster y analista experto en apuestas de fútbol.
         Partido: {home_name} vs {away_name}.
@@ -160,7 +160,7 @@ def procesar_prediccion_ia(call):
         Genera un reporte de apuestas estructurado basándote en estos resultados y en el estilo de juego histórico de estos equipos.
         Debes calcular y sugerir líneas para: Tiros de Esquina, Tarjetas y Tiros a Puerta.
         
-        Responde EXACTAMENTE con este formato Markdown (no agregues texto extra al inicio ni al final):
+        Responde EXACTAMENTE con este formato (no agregues asteriscos sueltos ni texto extra al inicio o final):
 
         📊 **ANÁLISIS DE APUESTAS PRO**
         ⚽ *{home_name} vs {away_name}*
@@ -170,11 +170,11 @@ def procesar_prediccion_ia(call):
         🔄 **Fiabilidad (Últimos 3 del Visitante):**
         {historial_visit}
         📈 **Probabilidades de Victoria:**
-        🏠 Local: X% | 🤝 Empate: X% | ✈️ Visitante: X%
+        🏠 Local: % | 🤝 Empate: % | ✈️ Visitante: %
 
         🎯 **Mercado de Goles:**
         • Ambos anotan: (Sí/No y por qué brevemente)
-        • Línea de Goles: (Sugerencia Over/Under 2.5 o 1.5)
+        • Línea de Goles: (Sugerencia Over/Under)
         • Marcador Exacto Probable: X-X
 
         🚩 **Mercados Especiales (Estimación táctica):**
@@ -188,17 +188,23 @@ def procesar_prediccion_ia(call):
 
         url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=12).json()
+        res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=15).json()
         
         if "candidates" in res:
             reporte_final = res["candidates"][0]["content"]["parts"][0]["text"]
-            bot.send_message(call.message.chat.id, reporte_final, parse_mode="Markdown")
+            try:
+                bot.send_message(call.message.chat.id, reporte_final, parse_mode="Markdown")
+            except Exception as tg_err:
+                # Seguro de vida por si Telegram rechaza el Markdown
+                bot.send_message(call.message.chat.id, f"⚠️ Error de formato en Telegram. Te lo envío en texto plano:\n\n{reporte_final}")
         else:
-            bot.send_message(call.message.chat.id, "❌ No se pudo generar la predicción estructurada.")
+            # AHORA SÍ VEREMOS EL ERROR REAL DE GOOGLE
+            error_oculto = str(res.get("error", res))
+            bot.send_message(call.message.chat.id, f"❌ API de Google rechazó la consulta. Motivo exacto:\n\n{error_oculto}")
 
     except Exception as e:
-        print(f"Error procesando apuesta pro: {e}")
-        bot.send_message(call.message.chat.id, "❌ Hubo un error de conexión con la base de datos deportiva.")
+        print(f"Error crítico procesando apuesta: {e}")
+        bot.send_message(call.message.chat.id, f"❌ Hubo un fallo en el servidor: {str(e)}")
 
 # ==========================================
 # 5. RASTREADOR DE TEXTO LIBRE (REPARADO)
