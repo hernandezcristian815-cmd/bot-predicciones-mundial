@@ -5,6 +5,9 @@ import google.generativeai as genai
 from flask import Flask
 from threading import Thread
 from datetime import datetime
+import os
+
+print("TOKEN:", os.getenv("TELEGRAM_TOKEN"))
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
