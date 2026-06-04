@@ -127,7 +127,6 @@ def procesar_prediccion_ia(call):
         partes = call.data.split('_')
         home_id = partes[1]
         away_id = partes[2]
-        # Recuperamos los nombres reales desde el propio botón
         home_name = partes[3] if len(partes) > 3 else "Equipo Local"
         away_name = partes[4] if len(partes) > 4 else "Equipo Visitante"
 
@@ -136,7 +135,6 @@ def procesar_prediccion_ia(call):
             'x-rapidapi-key': API_FOOTBALL_KEY
         }
 
-        # Intentamos consultar datos, si la API no responde, seguimos adelante
         try:
             h2h = requests.get("https://v3.football.api-sports.io/fixtures/headtohead", headers=headers, params={"h2h": f"{home_id}-{away_id}", "last": 5}, timeout=8).json()
             local = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": home_id, "last": 10}, timeout=8).json()
@@ -145,7 +143,7 @@ def procesar_prediccion_ia(call):
             h2h, local, visitante = {}, {}, {}
 
         def limpiar_resultados(json_data):
-            if not json_data or not json_data.get("response"): return "Sin registros recientes."
+            if not json_data or not json_data.get("response"): return "Sin registros."
             lineas = []
             for f in json_data["response"]:
                 h_team = f["teams"]["home"]["name"]
@@ -159,36 +157,39 @@ def procesar_prediccion_ia(call):
         historial_local = limpiar_resultados(local)
         historial_visit = limpiar_resultados(visitante)
 
-        # ORDEN ESTRICTA PARA LA IA (Incluso si no hay datos)
         prompt = f"""
-        Actúa como un analista experto en apuestas deportivas de élite.
-        Debes analizar este encuentro: {home_name} vs {away_name}.
+        Actúa como un analista experto en apuestas deportivas.
+        Partido: {home_name} vs {away_name}.
 
         Datos de la API:
         - H2H: {historial_h2h}
         - Últimos de {home_name}: {historial_local}
         - Últimos de {away_name}: {historial_visit}
 
-        ¡REGLA DE ORO! Si los datos anteriores dicen "Sin registros recientes", ESTÁ PROHIBIDO EXCUSARTE o decir que no puedes analizar.
-        En ese caso, USA OBLIGATORIAMENTE TU PROPIA BASE DE CONOCIMIENTO (o aplica lógica deportiva general de ventaja local/visitante) y GENERA UNA PREDICCIÓN REALISTA. Tienes que dar números concretos siempre.
+        REGLA DE ORO: Si no hay datos, usa tu propia base de conocimiento y lógica de localía para dar una predicción certera de todos modos.
+        EVITA usar asteriscos sueltos (*). Usa un formato súper limpio para Telegram.
 
-        Formato estricto para Telegram:
-        📊 **Probabilidades:**
-        - Gana {home_name}: %
-        - Empate: %
-        - Gana {away_name}: %
-        
-        ⚽ **Ambos anotan:** (Sí/No)
-        🔥 **Over/Under 2.5 goles:** (Análisis breve)
-        🎯 **Marcador exacto probable:** 💰 **Mejor apuesta:** 📈 **Nivel de confianza:** (Bajo / Medio / Alto)
+        Formato:
+        📊 Probabilidades: Local %, Empate %, Visitante %
+        ⚽ Ambos anotan: Sí/No
+        🔥 Over/Under 2.5: Detalle
+        🎯 Marcador exacto:
+        💰 Mejor apuesta:
         """
 
         respuesta = model.generate_content(prompt)
-        bot.send_message(call.message.chat.id, respuesta.text, parse_mode="Markdown")
+        
+        # SALVAVIDAS: Si Telegram crashea por el Markdown, lo mandamos en texto plano
+        try:
+            bot.send_message(call.message.chat.id, respuesta.text, parse_mode="Markdown")
+        except Exception as tg_error:
+            print(f"Telegram rechazó el Markdown: {tg_error}")
+            bot.send_message(call.message.chat.id, respuesta.text)
 
     except Exception as e:
-        print(f"Error crítico: {e}")
-        bot.send_message(call.message.chat.id, "❌ Error del servidor al procesar. Por favor, selecciona otro partido.")
+        print(f"Error crítico en proceso IA: {e}")
+        # Ahora el bot te dirá EXACTAMENTE qué falló en tu grupo
+        bot.send_message(call.message.chat.id, f"❌ Ocurrió un error técnico:\n`{str(e)}`\n_Si dice API Key not valid, revisa la llave de Gemini en Render._", parse_mode="Markdown")
 
 # ==========================================
 # 5. RASTREADOR WEB (TEXTO LIBRE)
