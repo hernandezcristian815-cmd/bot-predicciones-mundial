@@ -67,7 +67,7 @@ def obtener_cartelera_por_ligas():
                 
                 if any(x in liga for x in ["friendlies", "cup", "international"]) and pais == "world":
                     categorias["🏆 SELECCIONES"].append(info)
-                elif any(x in liga for x in ["premier", "la liga", "primera division", "serie a", "bundesliga", "champions", "europa league"]):
+                elif any(x in liga for x in ["premier league", "la liga", "primera division", "serie a", "bundesliga", "uefa champions", "uefa europa"]):
                     categorias["🇪🇺 LIGAS TOP EUROPA"].append(info)
                 elif any(x in liga or x in pais for x in ["colombia", "betplay", "argentina", "brazil", "mexico", "libertadores", "sudamericana"]):
                     categorias["🇨🇴 FÚTBOL LATINOAMÉRICA"].append(info)
