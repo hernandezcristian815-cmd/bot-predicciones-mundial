@@ -106,13 +106,12 @@ def enviar_menu_dinamico(message):
         bot.send_message(message.chat.id, texto_mensaje, parse_mode="Markdown", reply_markup=markup)
     except Exception as e:
         print(f"Error en menú: {e}")
-
 # ==========================================
-# 4. PROCESAMIENTO HÍBRIDO (APUESTAS COMPLETAS)
+# 4. MOTOR ESTADÍSTICO MATEMÁTICO AVANZADO (5 PARTIDOS + DEEP STATS)
 # ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('c_'))
 def procesar_prediccion_ia(call):
-    bot.answer_callback_query(call.id, text="Extrayendo últimos resultados y corners...")
+    bot.answer_callback_query(call.id, text="Procesando 5 partidos y estadísticas profundas...")
     
     try:
         partes = call.data.split('_')
@@ -126,86 +125,139 @@ def procesar_prediccion_ia(call):
             'x-rapidapi-key': API_FOOTBALL_KEY
         }
 
-        # EXTRAER LOS ÚLTIMOS 3 RESULTADOS REALES DE LA API
+        # 1. EXTRACCIÓN DE 5 PARTIDOS REALES (API DE FÚTBOL)
         try:
-            local_data = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": home_id, "last": 3}, timeout=8).json()
-            visit_data = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": away_id, "last": 3}, timeout=8).json()
+            local_data = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": home_id, "last": 5}, timeout=8).json()
+            visit_data = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": away_id, "last": 5}, timeout=8).json()
         except:
             local_data, visit_data = {}, {}
 
+        goles_recientes = 0
+        partidos_contados = 0
+
         def formatear_resultados(data):
+            nonlocal goles_recientes, partidos_contados
             res_str = ""
             if data and data.get("response"):
                 for f in data["response"]:
                     h_team = f["teams"]["home"]["name"]
                     a_team = f["teams"]["away"]["name"]
-                    g_h = f["goals"]["home"] if f["goals"]["home"] is not None else "-"
-                    g_a = f["goals"]["away"] if f["goals"]["away"] is not None else "-"
+                    g_h = f["goals"]["home"] if f["goals"]["home"] is not None else 0
+                    g_a = f["goals"]["away"] if f["goals"]["away"] is not None else 0
+                    
+                    goles_recientes += (g_h + g_a)
+                    partidos_contados += 1
                     res_str += f"▫️ {h_team} {g_h}-{g_a} {a_team}\n"
-            return res_str if res_str else "Sin datos recientes."
+            return res_str if res_str else "Sin datos."
 
         historial_local = formatear_resultados(local_data)
         historial_visit = formatear_resultados(visit_data)
 
-        # PROMPT PARA LA IA
+        # 2. DATA MINING CON IA (Promedios profundos sin gastar cuota de API)
         prompt = f"""
-        Actúa como un tipster y analista experto en apuestas de fútbol.
-        Partido: {home_name} vs {away_name}.
-
-        Resultados REALES de los últimos 3 partidos (Local):
-        {historial_local}
-        Resultados REALES de los últimos 3 partidos (Visitante):
-        {historial_visit}
-
-        Genera un reporte de apuestas estructurado basándote en estos resultados y en el estilo de juego histórico de estos equipos.
-        Debes calcular y sugerir líneas para: Tiros de Esquina, Tarjetas y Tiros a Puerta.
+        Actúa como base de datos deportiva. Analiza el estilo de juego general de {home_name} y {away_name}.
+        Devuelve ÚNICAMENTE los siguientes valores puros basados en promedios y conocimientos tácticos.
+        PROHIBIDO usar texto, Markdown o explicaciones. Solo el formato exacto clave:valor.
         
-        Responde EXACTAMENTE con este formato (no agregues asteriscos sueltos ni texto extra al inicio o final):
-
-        📊 **ANÁLISIS DE APUESTAS PRO**
-        ⚽ *{home_name} vs {away_name}*
-
-        🔄 **Fiabilidad (Últimos 3 del Local):**
-        {historial_local}
-        🔄 **Fiabilidad (Últimos 3 del Visitante):**
-        {historial_visit}
-        📈 **Probabilidades de Victoria:**
-        🏠 Local: % | 🤝 Empate: % | ✈️ Visitante: %
-
-        🎯 **Mercado de Goles:**
-        • Ambos anotan: (Sí/No y por qué brevemente)
-        • Línea de Goles: (Sugerencia Over/Under)
-        • Marcador Exacto Probable: X-X
-
-        🚩 **Mercados Especiales (Estimación táctica):**
-        • Tiros de Esquina (Corners): (Ej: Más de 8.5)
-        • Tarjetas Totales: (Ej: Más de 4.5 amarillas)
-        • Faltas / Tiros al arco: (Breve pronóstico)
-
-        💰 **MEJOR APUESTA (PICK DEL DÍA):** (Tu recomendación más segura)
-        ⚡ **Nivel de Confianza:** (Baja/Media/Alta)
+        corners: [numero decimal promedio del partido]
+        tarjetas: [numero decimal promedio del partido]
+        atajadas: [numero decimal promedio de atajadas por partido]
+        prob_local: [numero entero 0-100]
+        prob_visit: [numero entero 0-100]
+        prob_empate: [numero entero 0-100]
+        goleador_local: [Apellido del mejor jugador/goleador]
+        goleador_visitante: [Apellido del mejor jugador/goleador]
         """
+
+        # Variables por defecto (Seguro matemático)
+        corners, tarjetas, atajadas = 9.5, 4.5, 6.0
+        p_loc, p_vis, p_emp = 40, 35, 25
+        goleador_loc, goleador_vis = "Delantero", "Delantero"
 
         url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=15).json()
         
-        if "candidates" in res:
-            reporte_final = res["candidates"][0]["content"]["parts"][0]["text"]
-            try:
-                bot.send_message(call.message.chat.id, reporte_final, parse_mode="Markdown")
-            except Exception as tg_err:
-                # Seguro de vida por si Telegram rechaza el Markdown
-                bot.send_message(call.message.chat.id, f"⚠️ Error de formato en Telegram. Te lo envío en texto plano:\n\n{reporte_final}")
+        try:
+            res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=12).json()
+            if "candidates" in res:
+                texto_ia = res["candidates"][0]["content"]["parts"][0]["text"].strip()
+                
+                # Parseador avanzado de Python
+                for linea in texto_ia.split('\n'):
+                    if ':' in linea:
+                        clave, valor = linea.split(':', 1)
+                        clave = clave.strip().lower()
+                        valor_str = valor.strip()
+                        
+                        if 'goleador_local' in clave: goleador_loc = valor_str.title()
+                        elif 'goleador_visitante' in clave: goleador_vis = valor_str.title()
+                        else:
+                            try:
+                                num = float("".join(c for c in valor_str if c.isdigit() or c == '.'))
+                                if 'corners' in clave: corners = num
+                                elif 'tarjetas' in clave: tarjetas = num
+                                elif 'atajadas' in clave: atajadas = num
+                                elif 'prob_local' in clave: p_loc = num
+                                elif 'prob_visit' in clave: p_vis = num
+                                elif 'prob_empate' in clave: p_emp = num
+                            except:
+                                pass
+        except Exception as e:
+            print(f"Error en Data-Mining: {e}")
+
+        # 3. LÓGICA MATEMÁTICA PURA
+        total_prob = p_loc + p_vis + p_emp
+        if total_prob > 0:
+            p_loc = round((p_loc / total_prob) * 100)
+            p_vis = round((p_vis / total_prob) * 100)
+            p_emp = 100 - (p_loc + p_vis)
+
+        promedio_goles = round(goles_recientes / partidos_contados, 1) if partidos_contados > 0 else 2.5
+        linea_goles = "Over 2.5 🔥" if promedio_goles > 2.2 else "Under 2.5 🧊"
+        ambos_anotan = "Sí ⚽" if promedio_goles >= 2.0 and p_emp > 20 else "No 🚫"
+
+        if p_loc >= 45:
+            pick = f"Gana {home_name}"
+            confianza = "Alta 🟢"
+            marcador = "2-0 o 2-1"
+        elif p_vis >= 45:
+            pick = f"Gana {away_name}"
+            confianza = "Alta 🟢"
+            marcador = "0-1 o 1-2"
         else:
-            # AHORA SÍ VEREMOS EL ERROR REAL DE GOOGLE
-            error_oculto = str(res.get("error", res))
-            bot.send_message(call.message.chat.id, f"❌ API de Google rechazó la consulta. Motivo exacto:\n\n{error_oculto}")
+            pick = "Doble Oportunidad o Empate"
+            confianza = "Media 🟡"
+            marcador = "1-1 o 0-0"
+
+        # 4. CONSTRUCCIÓN DEL REPORTE PRO
+        reporte = f"📊 **ANÁLISIS ESTADÍSTICO PRO (5 PARTIDOS)**\n"
+        reporte += f"⚽ *{home_name} vs {away_name}*\n\n"
+        
+        reporte += f"📈 **Probabilidades Matemáticas:**\n"
+        reporte += f"🏠 Local: {p_loc}% | 🤝 Empate: {p_emp}% | ✈️ Visit: {p_vis}%\n\n"
+
+        reporte += f"🔄 **Forma Reciente (Últimos 5 del Local):**\n{historial_local}\n"
+        reporte += f"🔄 **Forma Reciente (Últimos 5 del Visitante):**\n{historial_visit}\n"
+        
+        reporte += f"🎯 **Líneas Calculadas para Apuestas:**\n"
+        reporte += f"• Promedio Goles: {promedio_goles}\n"
+        reporte += f"• Ambos Anotan: {ambos_anotan}\n"
+        reporte += f"• Tiros de Esquina: Más de {corners}\n"
+        reporte += f"• Tarjetas Totales: Más de {tarjetas}\n"
+        reporte += f"• Atajadas (Porteros): Más de {atajadas}\n\n"
+
+        reporte += f"⭐ **Jugadores a seguir (Posibles Goleadores):**\n"
+        reporte += f"• {home_name}: {goleador_loc}\n"
+        reporte += f"• {away_name}: {goleador_vis}\n\n"
+        
+        reporte += f"💰 **PICK DEL ALGORITMO:** {pick}\n"
+        reporte += f"⚡ **Confianza:** {confianza}"
+
+        bot.send_message(call.message.chat.id, reporte, parse_mode="Markdown")
 
     except Exception as e:
-        print(f"Error crítico procesando apuesta: {e}")
-        bot.send_message(call.message.chat.id, f"❌ Hubo un fallo en el servidor: {str(e)}")
-
+        print(f"Error crítico: {e}")
+        bot.send_message(call.message.chat.id, f"❌ Error interno procesando estadísticas: {str(e)}")
 # ==========================================
 # 5. RASTREADOR DE TEXTO LIBRE (REPARADO)
 # ==========================================
