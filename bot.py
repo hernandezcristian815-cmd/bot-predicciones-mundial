@@ -11,17 +11,16 @@ from duckduckgo_search import DDGS
 # ==========================================
 # 1. CONFIGURACIÓN Y SEGURIDAD
 # ==========================================
+# 1. CONFIGURACIÓN Y SEGURIDAD
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 if GEMINI_KEY:
-    # Forzamos a la librería a usar la API v1 estable de producción, evitando la v1beta que falla
-    genai.configure(api_key=GEMINI_KEY, client_options={"api_version": "v1"})
-
-# Inicializamos el modelo oficial y vigente de Google
+    genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
+
 
 app = Flask(__name__)
 
