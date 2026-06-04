@@ -154,13 +154,11 @@ def procesar_prediccion_ia(call):
         historial_local = formatear_resultados(local_data)
         historial_visit = formatear_resultados(visit_data)
 
-        # 2. IA COMO MINERO DE DATOS (FORMATO JSON OBLIGATORIO)
+        # 2. IA COMO MINERO DE DATOS (JSON PURO FORZADO)
         prompt = f"""
-        Actúa como analista de datos. Analiza estadísticamente a {home_name} y {away_name}.
-        Debes responder ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni bloques de código markdown.
-        Si no conoces un dato exacto, estima el promedio realista de ese equipo.
-        
-        Formato estricto a usar:
+        Analiza a {home_name} y {away_name}.
+        Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta.
+        Si no tienes datos exactos, usa tu conocimiento táctico para dar promedios reales.
         {{
             "corners": 9.2,
             "tarjetas": 4.5,
@@ -173,27 +171,31 @@ def procesar_prediccion_ia(call):
         }}
         """
 
-        # Variables por defecto en caso de caída total del servidor de Google
+        # Variables de respaldo
         datos_ia = {
             "corners": 8.5, "tarjetas": 4.0, "atajadas": 5.0,
             "prob_local": 35, "prob_visit": 35, "prob_empate": 30,
-            "goleador_local": "No definido", "goleador_visitante": "No definido"
+            "goleador_local": "Sin datos", "goleador_visitante": "Sin datos"
         }
 
         url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        
+        # ⚠️ LA MAGIA ESTÁ AQUÍ: Forzamos el modo JSON estricto a nivel de servidor
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json"}
+        }
         
         try:
             res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=12).json()
             if "candidates" in res:
                 texto_ia = res["candidates"][0]["content"]["parts"][0]["text"].strip()
-                # Limpiamos el texto por si la IA le pone comillas de código (```json)
-                texto_ia = texto_ia.replace("```json", "").replace("```", "").strip()
-                
-                # Convertimos el texto estricto a variables reales de Python
+                # Ahora Python leerá el JSON perfectamente sin chocar con texto basura
                 datos_ia.update(json.loads(texto_ia))
         except Exception as e:
             print(f"Error procesando JSON de la IA: {e}")
+            # Si falla, imprimimos el error en la consola de Render para saber por qué
+            print("Texto recibido de Gemini:", res)
 
         # 3. LÓGICA MATEMÁTICA
         total_prob = datos_ia["prob_local"] + datos_ia["prob_visit"] + datos_ia["prob_empate"]
