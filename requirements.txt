@@ -1,3 +1,5 @@
-TELEGRAM_TOKEN
-GEMINI_KEY
-API_FOOTBALL_KEY
+pyTelegramBotAPI
+requests
+google-generativeai
+flask
+gunicorn
