@@ -108,11 +108,11 @@ def enviar_menu_dinamico(message):
         print(f"Error en menú: {e}")
 
 # ==========================================
-# 4. PROCESAMIENTO HÍBRIDO (BÚSQUEDA IA + MATEMÁTICA PYTHON)
+# 4. PROCESAMIENTO HÍBRIDO (APUESTAS COMPLETAS)
 # ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('c_'))
 def procesar_prediccion_ia(call):
-    bot.answer_callback_query(call.id, text="Buscando estadísticas con la IA...")
+    bot.answer_callback_query(call.id, text="Extrayendo últimos resultados y corners...")
     
     try:
         partes = call.data.split('_')
@@ -121,137 +121,122 @@ def procesar_prediccion_ia(call):
         home_name = partes[3] if len(partes) > 3 else "Local"
         away_name = partes[4] if len(partes) > 4 else "Visitante"
 
-        # Rastreo web del encuentro para alimentar el contexto histórico
-        contexto_noticias = ""
+        headers = {
+            'x-rapidapi-host': 'v3.football.api-sports.io',
+            'x-rapidapi-key': API_FOOTBALL_KEY
+        }
+
+        # EXTRAER LOS ÚLTIMOS 3 RESULTADOS REALES DE LA API
         try:
-            with DDGS() as ddgs:
-                for r in ddgs.text(f"{home_name} vs {away_name} pronostico ultimos partidos resultados", max_results=3):
-                    contexto_noticias += f"{r['title']}: {r['body']}\n"
+            local_data = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": home_id, "last": 3}, timeout=8).json()
+            visit_data = requests.get("https://v3.football.api-sports.io/fixtures", headers=headers, params={"team": away_id, "last": 3}, timeout=8).json()
         except:
-            contexto_noticias = "Sin noticias web recientes."
+            local_data, visit_data = {}, {}
 
-        # Prompt estructurado: La IA solo actúa como base de datos externa de números puros
-        prompt_extraccion = f"""
-        Analiza las noticias actuales y tu conocimiento sobre el partido de fútbol: {home_name} vs {away_name}.
-        Noticias encontradas:
-        {contexto_noticias}
+        def formatear_resultados(data):
+            res_str = ""
+            if data and data.get("response"):
+                for f in data["response"]:
+                    h_team = f["teams"]["home"]["name"]
+                    a_team = f["teams"]["away"]["name"]
+                    g_h = f["goals"]["home"] if f["goals"]["home"] is not None else "-"
+                    g_a = f["goals"]["away"] if f["goals"]["away"] is not None else "-"
+                    res_str += f"▫️ {h_team} {g_h}-{g_a} {a_team}\n"
+            return res_str if res_str else "Sin datos recientes."
 
-        Extrae o estima los números del rendimiento de estos equipos y responde ÚNICAMENTE con el siguiente formato exacto de líneas (reemplaza X, Y, Z, W, V por números enteros puros, no escribas nada más de texto ni explicaciones):
-        victorias_local: X
-        victorias_visitante: Y
-        empates: Z
-        goles_totales: W
-        partidos_totales: V
+        historial_local = formatear_resultados(local_data)
+        historial_visit = formatear_resultados(visit_data)
+
+        # PROMPT PARA LA IA CON CONEXIÓN DIRECTA (Sin errores 404)
+        prompt = f"""
+        Actúa como un tipster y analista experto en apuestas de fútbol.
+        Partido: {home_name} vs {away_name}.
+
+        Resultados REALES de los últimos 3 partidos (Local):
+        {historial_local}
+        Resultados REALES de los últimos 3 partidos (Visitante):
+        {historial_visit}
+
+        Genera un reporte de apuestas estructurado basándote en estos resultados y en el estilo de juego histórico de estos equipos.
+        Debes calcular y sugerir líneas para: Tiros de Esquina, Tarjetas y Tiros a Puerta.
+        
+        Responde EXACTAMENTE con este formato Markdown (no agregues texto extra al inicio ni al final):
+
+        📊 **ANÁLISIS DE APUESTAS PRO**
+        ⚽ *{home_name} vs {away_name}*
+
+        🔄 **Fiabilidad (Últimos 3 del Local):**
+        {historial_local}
+        🔄 **Fiabilidad (Últimos 3 del Visitante):**
+        {historial_visit}
+        📈 **Probabilidades de Victoria:**
+        🏠 Local: X% | 🤝 Empate: X% | ✈️ Visitante: X%
+
+        🎯 **Mercado de Goles:**
+        • Ambos anotan: (Sí/No y por qué brevemente)
+        • Línea de Goles: (Sugerencia Over/Under 2.5 o 1.5)
+        • Marcador Exacto Probable: X-X
+
+        🚩 **Mercados Especiales (Estimación táctica):**
+        • Tiros de Esquina (Corners): (Ej: Más de 8.5)
+        • Tarjetas Totales: (Ej: Más de 4.5 amarillas)
+        • Faltas / Tiros al arco: (Breve pronóstico)
+
+        💰 **MEJOR APUESTA (PICK DEL DÍA):** (Tu recomendación más segura)
+        ⚡ **Nivel de Confianza:** (Baja/Media/Alta)
         """
 
-        # VALORES POR DEFECTO BASE (Seguro de vida matemático)
-        v_h, v_a, emp, g_t, p_t = 3, 2, 1, 15, 6
-
-        # CONEXIÓN DIRECTA POR HTTP A GEMINI (Bypasa errores del SDK y bloqueos 404)
-        try:
-            url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-            payload = {"contents": [{"parts": [{"text": prompt_extraccion}]}]}
-            res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=10).json()
-            
-            if "candidates" in res:
-                texto_ia = res["candidates"][0]["content"]["parts"][0]["text"]
-                # Parseador de números automático en Python
-                for linea in texto_ia.split("\n"):
-                    if ":" in linea:
-                        clave, valor = linea.split(":", 1)
-                        clave = clave.strip().lower()
-                        valor = "".join(filter(str.isdigit, valor.strip()))
-                        if valor:
-                            num = int(valor)
-                            if "victorias_local" in clave: v_h = num
-                            elif "victorias_visitante" in clave: v_a = num
-                            elif "empates" in clave: emp = num
-                            elif "goles_totales" in clave: g_t = num
-                            elif "partidos_totales" in clave: p_t = max(num, 1)
-        except Exception as err_api:
-            print(f"Error llamando a la API de Google: {err_api}")
-
-        # --- PROCESAMIENTO MATEMÁTICO REAL EN EL SERVIDOR PYTHON ---
-        total_p = v_h + v_a + emp
-        if total_p == 0: v_h, v_a, emp, total_p = 3, 2, 1, 6
-
-        p_local = round((v_h / total_p) * 100)
-        p_visitante = round((v_a / total_p) * 100)
-        p_empate = 100 - (p_local + p_visitante)
-        goles_prom = round(g_t / max(p_t, 1), 1)
-        if goles_prom == 0: goles_prom = 2.4
-
-        ambos_anotan = "Sí ⚽" if goles_prom >= 2.1 else "No 🚫"
-        over_under = "Over 2.5 🔥" if goles_prom >= 2.5 else "Under 2.5 🧊"
+        url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=12).json()
         
-        if p_local >= 45:
-            marcador = "2-0 o 2-1"
-            pick = f"Gana {home_name} (o ventaja Local)"
-            confianza = "Alta 🟢"
-        elif p_visitante >= 45:
-            marcador = "0-1 o 1-2"
-            pick = f"Gana {away_name} (o ventaja Visitante)"
-            confianza = "Alta 🟢"
+        if "candidates" in res:
+            reporte_final = res["candidates"][0]["content"]["parts"][0]["text"]
+            bot.send_message(call.message.chat.id, reporte_final, parse_mode="Markdown")
         else:
-            marcador = "1-1 o 0-0"
-            pick = "Empate o Menos de 2.5 goles"
-            confianza = "Media 🟡"
-
-        # --- CONSTRUCCIÓN DEL MENSAJE FINAL (Estructura fija perfecta) ---
-        reporte = f"📊 **ANÁLISIS ESTADÍSTICO HÍBRIDO**\n"
-        reporte += f"⚽ *{home_name} vs {away_name}*\n\n"
-        reporte += f"📈 **Probabilidades Matemáticas (IA + Modelo):**\n"
-        reporte += f"🏠 Local: {p_local}%\n"
-        reporte += f"🤝 Empate: {p_empate}%\n"
-        reporte += f"✈️ Visitante: {p_visitante}%\n\n"
-        reporte += f"🎯 **Proyecciones del Encuentro:**\n"
-        reporte += f"• Promedio goles: {goles_prom} por juego\n"
-        reporte += f"• Ambos anotan: {ambos_anotan}\n"
-        reporte += f"• Línea sugerida: {over_under}\n"
-        reporte += f"• Marcador exacto: {marcador}\n\n"
-        reporte += f"💰 **Mejor Apuesta:** {pick}\n"
-        reporte += f"⚡ **Confianza:** {confianza}\n"
-
-        bot.send_message(call.message.chat.id, reporte, parse_mode="Markdown")
+            bot.send_message(call.message.chat.id, "❌ No se pudo generar la predicción estructurada.")
 
     except Exception as e:
-        print(f"Error general: {e}")
-        bot.send_message(call.message.chat.id, "❌ Error al compilar los números del partido.")
+        print(f"Error procesando apuesta pro: {e}")
+        bot.send_message(call.message.chat.id, "❌ Hubo un error de conexión con la base de datos deportiva.")
 
 # ==========================================
-# 5. RASTREADOR DE TEXTO LIBRE (CONEXIÓN DIRECTA)
+# 5. RASTREADOR DE TEXTO LIBRE (REPARADO)
 # ==========================================
 @bot.message_handler(func=lambda message: True)
 def buscar_equipo_libre(message):
     texto = message.text.lower()
     if "datos de" in texto or "estadisticas de" in texto:
-        equipo = message.text.replace("datos de", "").replace("Datos de", "").replace("estadísticas de", "").strip()
+        equipo = message.text.replace("datos de", "").replace("datos de", "").replace("estadísticas de", "").strip()
         if not equipo:
-            bot.reply_to(message, "Escribe el nombre del club. Ejemplo: `datos de Atletico Nacional`")
+            bot.reply_to(message, "Escribe el nombre del club. Ejemplo: `datos de Boca Juniors`")
             return
             
-        bot.reply_to(message, f"🌐 Rastreando internet en busca de *{equipo}*...", parse_mode="Markdown")
+        bot.reply_to(message, f"🌐 Rastreando internet y analizando a *{equipo}*...", parse_mode="Markdown")
+        
         try:
             contexto = ""
-            with DDGS() as ddgs:
-                for r in ddgs.text(f"{equipo} actualidad ultimos resultados futbol", max_results=3):
-                    contexto += f"Titular: {r['title']}\nResumen: {r['body']}\n\n"
+            try:
+                with DDGS() as ddgs:
+                    for r in ddgs.text(f"{equipo} actualidad ultimos resultados futbol apuestas", max_results=3):
+                        contexto += f"{r['title']}: {r['body']}\n"
+            except:
+                contexto = "No se pudo acceder a noticias en vivo por límite de búsquedas, usa tu conocimiento general del equipo."
             
-            prompt = f"Actúa como analista. Basado en esta info actual de internet:\n{contexto}\nDa un perfil táctico rápido para apuestas de {equipo} en Markdown."
+            prompt = f"Actúa como un analista deportivo. Basado en tu base de datos y esta info reciente si la hay: {contexto}. Escribe un resumen táctico de apuestas para {equipo}. Incluye promedios típicos de córners, estilo de juego, y si son un equipo tarjetero o limpio. Usa Markdown y emojis."
             
             url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=10).json()
+            res = requests.post(url_gemini, json=payload, headers={"Content-Type": "application/json"}, timeout=12).json()
             
             if "candidates" in res:
                 respuesta_texto = res["candidates"][0]["content"]["parts"][0]["text"]
                 bot.send_message(message.chat.id, respuesta_texto, parse_mode="Markdown")
             else:
-                bot.send_message(message.chat.id, "❌ No logré procesar el resumen táctico.")
-        except:
-            bot.reply_to(message, "❌ Fallo de conexión con los buscadores.")
+                bot.send_message(message.chat.id, f"❌ Google IA bloqueó la respuesta o no hay datos para {equipo}.")
+        except Exception as e:
+            bot.reply_to(message, "❌ Error de conexión al procesar el resumen de este equipo.")
 
 if __name__ == "__main__":
     Thread(target=run_flask).start()
-    print("Bot Híbrido Corriendo...")
     bot.infinity_polling()
