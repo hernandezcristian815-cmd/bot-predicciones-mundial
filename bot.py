@@ -11,18 +11,25 @@ from duckduckgo_search import DDGS
 # ==========================================
 # 1. CONFIGURACIÓN Y SEGURIDAD
 # ==========================================
-# 1. CONFIGURACIÓN Y SEGURIDAD
-TTELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
+
+# Validadores para evitar que el bot crashee en silencio si falta una clave en Render
+if not TELEGRAM_TOKEN:
+    print("❌ ERROR CRÍTICO: TELEGRAM_TOKEN está vacío. Revisa la pestaña Environment en Render.")
+if not API_FOOTBALL_KEY:
+    print("❌ ERROR CRÍTICO: API_FOOTBALL_KEY está vacío. Revisa la pestaña Environment en Render.")
+if not GEMINI_KEY:
+    print("❌ ERROR CRÍTICO: GEMINI_KEY está vacío. Revisa la pestaña Environment en Render.")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
 
-# Usamos el modelo flash oficial
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash') 
+
 app = Flask(__name__)
 
 @app.route('/')
