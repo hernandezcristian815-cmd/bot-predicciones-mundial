@@ -12,16 +12,17 @@ from duckduckgo_search import DDGS
 # 1. CONFIGURACIÓN Y SEGURIDAD
 # ==========================================
 # 1. CONFIGURACIÓN Y SEGURIDAD
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TTELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 API_FOOTBALL_KEY = os.environ.get("API_FOOTBALL_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-1.0-pro')
 
-
+# Usamos el modelo flash oficial
+model = genai.GenerativeModel('gemini-1.5-flash')
 app = Flask(__name__)
 
 @app.route('/')
