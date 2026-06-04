@@ -17,7 +17,10 @@ GEMINI_KEY = os.environ.get("GEMINI_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
+    # Forzamos a la librería a usar la API v1 estable de producción, evitando la v1beta que falla
+    genai.configure(api_key=GEMINI_KEY, client_options={"api_version": "v1"})
+
+# Inicializamos el modelo oficial y vigente de Google
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 app = Flask(__name__)
