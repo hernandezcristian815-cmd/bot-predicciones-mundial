@@ -291,3 +291,7 @@ def buscar_equipo_libre(message):
                 bot.send_message(message.chat.id, f"❌ Google IA bloqueó la respuesta. Motivo:\n`{error_real}`", parse_mode="Markdown")
         except Exception as e:
             bot.reply_to(message, "❌ Error de conexión al procesar el resumen.")
+if __name__ == "__main__":
+    Thread(target=run_flask).start()
+    print("Bot Estadístico Corriendo...")
+    bot.infinity_polling()
