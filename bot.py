@@ -3,23 +3,21 @@ import asyncio
 import requests
 import numpy as np
 from scipy.stats import poisson
-import google.generativeai as genai
+from google import genai
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 
-# --- 1. CONFIGURACIÓN DE TUS APIS (VARIABLES DE ENTORNO) ---
-# En Render, debes ir a "Environment" e ingresar estas tres variables
+# --- 1. CONFIGURACIÓN CON TUS NOMBRES EXACTOS DE RENDER ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+FOOTBALL_API_KEY = os.getenv("API_FOOTBALL_KEY") # Ajustado a tu nombre
+GEMINI_API_KEY = os.getenv("GEMINI_KEY")         # Ajustado a tu nombre
 
 # Validar que las credenciales existan
 if not all([TELEGRAM_TOKEN, FOOTBALL_API_KEY, GEMINI_API_KEY]):
-    raise ValueError("Faltan variables de entorno. Verifica tu configuración en Render.")
+    raise ValueError("Faltan variables de entorno. Verifica TELEGRAM_TOKEN, API_FOOTBALL_KEY y GEMINI_KEY en Render.")
 
-# Configurar Gemini (Usamos el modelo flash por velocidad)
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# Configurar cliente de la nueva librería de Gemini
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Inicializar Bot de Telegram
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -46,7 +44,7 @@ def obtener_goles_promedio(equipo_id, liga_id=140, season="2025"):
         "x-rapidapi-key": FOOTBALL_API_KEY, 
         "x-rapidapi-host": "v3.football.api-sports.io"
     }
-    # Nota: liga_id=140 es La Liga (España). Ajusta si es necesario.
+    # Nota: liga_id=140 es La Liga (España). Ajusta según la liga que desees consultar.
     response = requests.get(url, headers=headers, params={"team": equipo_id, "league": liga_id, "season": season})
     if response.status_code == 200:
         stats = response.json().get("response", {})
@@ -63,7 +61,7 @@ def obtener_goles_promedio(equipo_id, liga_id=140, season="2025"):
 # --- 3. MOTOR ESTADÍSTICO MATEMÁTICO (PYTHON PURO) ---
 def calcular_probabilidades(goles_local, goles_visitante):
     """Aplica la Distribución de Poisson para sacar porcentajes exactos."""
-    promedio_liga = 1.3 # Promedio genérico de goles por equipo en ligas top
+    promedio_liga = 1.3 
     
     # xG (Expected Goals / Goles Esperados)
     xg_local = (goles_local["gf_home"] / promedio_liga) * (goles_visitante["gc_away"] / promedio_liga) * promedio_liga
@@ -104,14 +102,17 @@ def consultar_gemini(estadisticas, local, visitante):
     Da una conclusión directa sobre qué mercado estadístico tiene más valor.
     """
     try:
-        response = model.generate_content(prompt)
+        # Usamos la nueva sintaxis de la librería google-genai
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
         return response.text.strip()
     except Exception as e:
         print(f"Error Gemini: {e}")
         return "⚠️ Error consultando a la Inteligencia Artificial."
 
 # --- 5. LÓGICA DEL BOT DE TELEGRAM ---
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     """Manejador del comando de inicio."""
@@ -143,11 +144,10 @@ async def analizar_partido(message: types.Message):
     id_visit, nombre_visit = buscar_equipo(eq_visit_str.strip())
 
     if not id_local or not id_visit:
-        await msg.edit_text("❌ No logré encontrar uno o ambos equipos en la base de datos oficial. Intenta con un nombre más específico.")
+        await msg.edit_text("❌ No logré encontrar uno o ambos equipos. Intenta con un nombre más específico.")
         return
 
     await msg.edit_text("⏳ *2/3* Procesando estadísticas puras y matemáticas...", parse_mode="Markdown")
-    # Para ligas diferentes a La Liga (140), deberás ajustar el id_liga dinámicamente en el futuro.
     stats_local = obtener_goles_promedio(id_local) 
     stats_visit = obtener_goles_promedio(id_visit)
 
@@ -168,7 +168,6 @@ async def analizar_partido(message: types.Message):
     )
     await msg.edit_text(texto_base, parse_mode="Markdown")
 
-    # Inyección a Gemini
     idea_apuesta = consultar_gemini(estadisticas, nombre_local, nombre_visit)
     
     texto_final = texto_base.replace("🤖 *3/3* Consultando motor de Inteligencia Artificial...", f"💡 *CONCLUSIÓN IA:*\n{idea_apuesta}")
