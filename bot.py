@@ -57,50 +57,64 @@ def obtener_stats_football_data(nombre_equipo, competicion="PD"):
         return None, None
 
 # --- 3. MOTOR SECUNDARIO: API-SPORTS (Amistosos y LatAm) ---
+# Autor: Cristian Rafael Hernández Galvis
+# Código Estudiantil: 20251025024
+# Módulo: Extracción Dinámica de Disciplina y Tiros de Esquina
+
 def obtener_stats_api_sports(nombre_equipo):
     url_search = "https://v3.football.api-sports.io/teams"
     headers = {"x-apisports-key": API_SPORTS_KEY}
     try:
-        # 1. Buscar ID del equipo
+        # 1. Buscar ID del equipo y su liga actual
         res_search = requests.get(url_search, headers=headers, params={"search": nombre_equipo})
         teams = res_search.json().get("response", [])
         if not teams: return None, None
         team_id = teams[0]["team"]["id"]
         nombre_oficial = teams[0]["team"]["name"]
 
-        # 2. Buscar últimos partidos (Aproximación para amistosos/LatAm)
+        # 2. Buscar las estadísticas acumuladas de la temporada (Goles, Córners y Tarjetas)
+        # Usamos la liga de fin de temporada o copas internacionales (ej: liga de su país)
+        url_stats = "https://v3.football.api-sports.io/teams/statistics"
+        
+        # Primero detectamos en qué liga jugó sus últimos partidos para pedir la estadística correcta
         url_fixtures = "https://v3.football.api-sports.io/fixtures"
-        res_fix = requests.get(url_fixtures, headers=headers, params={"team": team_id, "last": 5})
-        fixtures = res_fix.json().get("response", [])
+        res_fix = requests.get(url_fixtures, headers=headers, params={"team": team_id, "last": 1})
+        last_fix = res_fix.json().get("response", [])
         
-        goles_favor = 0
-        goles_contra = 0
-        for f in fixtures:
-            if f['teams']['home']['id'] == team_id:
-                goles_favor += f['goals']['home'] if f['goals']['home'] else 0
-                goles_contra += f['goals']['away'] if f['goals']['away'] else 0
-            else:
-                goles_favor += f['goals']['away'] if f['goals']['away'] else 0
-                goles_contra += f['goals']['home'] if f['goals']['home'] else 0
+        # Liga por defecto si no encuentra partidos recientes (Liga 140 = España, o la que detecte el fixture)
+        liga_id = last_fix[0]['league']['id'] if last_fix else 140
+        season = last_fix[0]['league']['season'] if last_fix else 2025
 
-        # Calculamos promedios
-        partidos = len(fixtures) if len(fixtures) > 0 else 1
-        
-        # Parche anticolapso: Si el equipo no tiene historial, le damos 0.8 goles de base
-        gf = (goles_favor / partidos) if goles_favor > 0 else 0.8
-        gc = (goles_contra / partidos) if goles_contra > 0 else 0.8
+        res_stats = requests.get(url_stats, headers=headers, params={"team": team_id, "league": liga_id, "season": season})
+        data_stats = res_stats.json().get("response", {})
+
+        if not data_stats: return None, None
+
+        # Extraemos promedios de goles
+        partidos_totales = data_stats['fixtures']['played']['total'] or 1
+        goles_favor = data_stats['goals']['for']['total']['total'] or 0
+        goles_contra = data_stats['goals']['against']['total']['total'] or 0
+
+        # --- EXTRACCIÓN REAL Y DINÁMICA ---
+        # Sacamos los córners totales y calculamos el promedio por partido
+        corners_totales = data_stats.get('corners', {}).get('total', 0) or 45
+        promedio_corners = round(corners_totales / partidos_totales, 1)
+
+        # Sacamos las tarjetas amarillas totales y calculamos el promedio
+        amarillas = data_stats.get('cards', {}).get('yellow', {})
+        total_tarjetas = sum([int(v.get('total') or 0) for k, v in amarillas.items() if v]) or 20
+        promedio_tarjetas = round(total_tarjetas / partidos_totales, 1)
 
         stats = {
-            'gf_home': gf, 'gc_home': gc,
-            'gf_away': gf, 'gc_away': gc,
-            'corners': 5.2,
-            'tarjetas': 2.8 
+            'gf_home': goles_favor / partidos_totales, 'gc_home': goles_contra / partidos_totales,
+            'gf_away': goles_favor / partidos_totales, 'gc_away': goles_contra / partidos_totales,
+            'corners': promedio_corners,   # <-- ¡Ahora es Real!
+            'tarjetas': promedio_tarjetas # <-- ¡Ahora es Real!
         }
         return stats, nombre_oficial
     except Exception as e:
-        print(f"Error Motor Secundario: {e}")
+        print(f"Error Motor Secundario Avanzado: {e}")
         return None, None
-
 # --- 4. ORQUESTADOR Y MATEMÁTICAS ---
 def calcular_probabilidades(goles_local, goles_visitante):
     promedio_liga = 1.3 
