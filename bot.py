@@ -1,15 +1,17 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium v6 - Cascada Real de 3 APIs & Handlers Corregidos
+# Proyecto: Value Betting Engine Premium v7 - Modo JSON Estricto y Regex Blindado
 
 import os
 import requests
 import json
 import sqlite3
+import re
 import numpy as np
 from scipy.stats import poisson
 from datetime import datetime
 from google import genai
+from google.genai import types as genai_types
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -87,7 +89,7 @@ def consultar_partidos_del_dia():
     url_matches = "https://api.football-data.org/v4/matches"
     partidos_detectados = []
     try:
-        res = requests.get(url_matches, headers=headers_fd, timeout=5)
+        res = requests.get(url_matches, headers=headers_fd, timeout=4)
         if "X-Requests-Available-Minute" in res.headers:
             CUOTAS_MONITOR["football_data"] = f"{res.headers['X-Requests-Available-Minute']} req/min"
         
@@ -102,39 +104,46 @@ def consultar_partidos_del_dia():
                         "visitante": m["awayTeam"]["name"],
                         "hora": m["utcDate"][11:16]
                     })
-    except Exception as e:
-        print(f"Error en calendario: {e}")
+    except:
+        pass
     return partidos_detectados
 
-# --- 5. API 3: AGENTE COGNITIVO IA (RESPALDO INTELIGENTE) ---
+# --- 5. API 3: AGENTE COGNITIVO IA (MODO JSON ESTRICTO BLINDADO) ---
 def investigar_equipo_con_ia(nombre_equipo):
     prompt = f"""
-    Investiga el rendimiento deportivo actual y promedios de goles del equipo o selección nacional de fútbol: "{nombre_equipo}".
-    Extrae promedios estimados de goles marcados (gf), recibidos (gc), córners y tarjetas por partido basados en sus juegos de este año.
-    Devuelve ÚNICAMENTE un objeto JSON limpio, sin bloques markdown de código, con esta estructura exacta:
+    Investiga el rendimiento deportivo y promedios de goles recientes del equipo o selección nacional de fútbol: "{nombre_equipo}".
+    Calcula promedios estimados de goles marcados (gf), recibidos (gc), córners y tarjetas por partido basados en sus juegos recientes.
+    Devuelve estrictamente un objeto con la siguiente estructura JSON:
     {{"name": "{nombre_equipo}", "gf": 1.45, "gc": 1.15, "corners": 4.8, "tarjetas": 2.2, "informacion_historica": true}}
     """
     try:
         if isinstance(CUOTAS_MONITOR["gemini"], int) and CUOTAS_MONITOR["gemini"] > 0:
             CUOTAS_MONITOR["gemini"] -= 1
-        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
-        text = response.text.strip().replace("```json", "").replace("```", "").strip()
-        data = json.loads(text)
-        data['fuente'] = "Inferencia Histórica (Gemini IA)"
+            
+        # Forzamos al modelo a responder estructurado en JSON nativo
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                response_mime_type="application/json"
+            ),
+        )
+        data = json.loads(response.text.strip())
+        data['fuente'] = "Tendencia Histórica (Gemini IA)"
         return data
     except: 
         return None
 
-# --- 6. EXTRACTOR EN CASCADA REAL (SOPORTE DE LAS 3 APIS INDEPENDIENTES) ---
-def buscar_datos_equipo(nombre_equipo, codigo_liga_sugerido=None):
-    nombre_limpio = nombre_equipo.split("(")[0].strip()
+# --- 6. EXTRACTOR EN CASCADA REAL (EVALUACIÓN INDEPENDIENTE POR EQUIPO) ---
+def buscar_datos_equipo(nombre_equipo):
+    nombre_limpio = nombre_equipo.strip()
     
-    # --- API 1: FOOTBALL-DATA.ORG ---
-    if codigo_liga_sugerido and codigo_liga_sugerido in LIGAS_MAPA:
-        headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-        url_fd = f"https://api.football-data.org/v4/competitions/{codigo_liga_sugerido}/standings"
+    # --- INTERFAZ 1: FOOTBALL-DATA (Barrido Rápido de Tablas Activas) ---
+    headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
+    for liga in ["WC", "PL", "PD", "BSA"]: # Escaneo directo de las ligas principales del plan
+        url_fd = f"https://api.football-data.org/v4/competitions/{liga}/standings"
         try:
-            res = requests.get(url_fd, headers=headers_fd, timeout=4)
+            res = requests.get(url_fd, headers=headers_fd, timeout=2)
             if res.status_code == 200:
                 tabla = next((t for t in res.json().get('standings', []) if t['type'] == 'TOTAL'), None)
                 if tabla:
@@ -143,16 +152,16 @@ def buscar_datos_equipo(nombre_equipo, codigo_liga_sugerido=None):
                             partidos = row['playedGames'] if row['playedGames'] > 0 else 1
                             return {
                                 'name': row['team']['name'], 'gf': row['goalsFor'] / partidos, 'gc': row['goalsAgainst'] / partidos, 
-                                'corners': 5.1, 'tarjetas': 2.2, 'fuente': f"Football-Data ({codigo_liga_sugerido})"
+                                'corners': 5.0, 'tarjetas': 2.0, 'fuente': f"Football-Data ({liga})"
                             }
-        except: 
+        except:
             pass
 
-    # --- API 2: API-SPORTS (SOPORTE COMPLETO PARA COLOMBIA, PORTUGAL, SELECCIONES Y AMISTOSOS) ---
+    # --- INTERFAZ 2: API-SPORTS (Soporte de Servidor para Historiales Internacionales) ---
     url_as = "https://v3.football.api-sports.io/teams"
     headers_as = {"x-apisports-key": API_SPORTS_KEY}
     try:
-        res_search = requests.get(url_as, headers=headers_as, params={"search": nombre_limpio}, timeout=4)
+        res_search = requests.get(url_as, headers=headers_as, params={"search": nombre_limpio}, timeout=3)
         if "x-ratelimit-requests-remaining" in res_search.headers:
             CUOTAS_MONITOR["api_sports"] = f"{res_search.headers['x-ratelimit-requests-remaining']} req/día"
         teams = res_search.json().get("response", [])
@@ -160,7 +169,7 @@ def buscar_datos_equipo(nombre_equipo, codigo_liga_sugerido=None):
             team_id = teams[0]["team"]["id"]
             nombre_oficial = teams[0]["team"]["name"]
             url_fix = f"https://v3.football.api-sports.io/fixtures?team={team_id}&last=5"
-            res_fix = requests.get(url_fix, headers=headers_as, timeout=4)
+            res_fix = requests.get(url_fix, headers=headers_as, timeout=3)
             fixtures = res_fix.json().get("response", [])
             if fixtures:
                 g_favor = sum([(f['goals']['home'] if f['teams']['home']['id'] == team_id else f['goals']['away']) for f in fixtures if f['goals']['home'] is not None])
@@ -173,7 +182,7 @@ def buscar_datos_equipo(nombre_equipo, codigo_liga_sugerido=None):
     except: 
         pass
 
-    # --- API 3: GEMINI IA ---
+    # --- INTERFAZ 3: RESPALDO COGNITIVO GEMINI IA ---
     return investigar_equipo_con_ia(nombre_limpio)
 
 # --- 7. POISSON Y VALOR DE CUOTAS ---
@@ -228,9 +237,9 @@ async def boton_hoy_callback(callback_query: types.CallbackQuery):
 
 async def procesar_y_enviar_agenda(message: types.Message, de_boton=False):
     if de_boton:
-        await message.edit_text("⏳ Sincronizando agenda global de partidos (1 Request)...")
+        await message.edit_text("⏳ Sincronizando agenda de partidos de hoy...")
     else:
-        msg_espera = await message.reply("⏳ Sincronizando agenda global de partidos (1 Request)...")
+        msg_espera = await message.reply("⏳ Sincronizando agenda de partidos de hoy...")
     
     agenda = consultar_partidos_del_dia()
     
@@ -253,33 +262,26 @@ async def procesar_y_enviar_agenda(message: types.Message, de_boton=False):
 
 @dp.message(Command("analizar"))
 async def analizar_partido(message: types.Message):
-    # CORREGIDO: Limpieza dinámica estricta que elimina el comando y el username del bot si viene con el @
-    partes = message.text.split(" ")
-    argumentos = " ".join(partes[1:]).strip()
+    # REGEX LIMPIEZA ELITE: Elimina limpiamente cualquier rastro del comando y el username del bot
+    argumentos = re.sub(r'^/analizar(@\w+)?\s+', '', message.text).strip()
     
     if " vs " not in argumentos: 
         return await message.reply("⚠️ Usa: `/analizar Equipo A vs Equipo B`", reply_markup=obtener_teclado_interactivo())
     
     eq_local, eq_visit = argumentos.split(" vs ")
-    msg = await message.reply("⏳ *[░░░░░░░░░░] 0%* Abriendo pasarela optimizada...")
+    msg = await message.reply("⏳ *[░░░░░░░░░░] 0%* Abriendo pasarela de comunicación...")
 
-    liga_detectada = None
-    agenda_hoy = consultar_partidos_del_dia()
-    for p in agenda_hoy:
-        if eq_local.lower() in p["local"].lower() or p["local"].lower() in eq_local.lower():
-            liga_detectada = p["liga"]
-            break
-
-    await msg.edit_text(f"⏳ *[███░░░░░░░] 30%* Escaneando local: {eq_local}")
-    stats_local = buscar_datos_equipo(eq_local, liga_detectada)
+    # Buscamos de forma independiente cada equipo en la cascada de las 3 APIs
+    await msg.edit_text(f"⏳ *[███░░░░░░░] 30%* Analizando local: {eq_local}")
+    stats_local = buscar_datos_equipo(eq_local)
     
-    await msg.edit_text(f"⏳ *[██████░░░░] 60%* Escaneando visitante: {eq_visit}")
-    stats_visit = buscar_datos_equipo(eq_visit, liga_detectada)
+    await msg.edit_text(f"⏳ *[██████░░░░] 60%* Analizando visitante: {eq_visit}")
+    stats_visit = buscar_datos_equipo(eq_visit)
 
     if not stats_local or not stats_visit:
         return await msg.edit_text("❌ Error. Datos insuficientes en las 3 APIs para procesar el cruce.", reply_markup=obtener_teclado_interactivo())
 
-    await msg.edit_text("⏳ *[█████████░] 90%* Cruzando Poisson y calculando valor de cuota justa...")
+    await msg.edit_text("⏳ *[█████████░] 90%* Operando Poisson y calculando valor de cuotas...")
     estadisticas = calcular_probabilidades(stats_local, stats_visit)
     corners_avg = round((stats_local['corners'] + stats_visit['corners']) / 2, 1)
     tarjetas_avg = round((stats_local['tarjetas'] + stats_visit['tarjetas']) / 2, 1)
@@ -342,8 +344,7 @@ async def procesar_y_enviar_efectividad(message: types.Message, de_boton=False):
 
 @dp.message(Command("equipo"))
 async def consulting_equipo_solo(message: types.Message):
-    partes = message.text.split(" ")
-    nombre = " ".join(partes[1:]).strip()
+    nombre = re.sub(r'^/equipo(@\w+)?\s+', '', message.text).strip()
     if not nombre: return await message.reply("⚠️ Indica el equipo.", reply_markup=obtener_teclado_interactivo())
     msg = await message.reply("🔍 Buscando...")
     data = buscar_datos_equipo(nombre)
