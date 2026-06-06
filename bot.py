@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium v5 - Producción Blindada Sin Errores de Sintaxis
+# Proyecto: Value Betting Engine Premium v6 - Cascada Real de 3 APIs & Handlers Corregidos
 
 import os
 import requests
@@ -8,7 +8,7 @@ import json
 import sqlite3
 import numpy as np
 from scipy.stats import poisson
-from datetime import datetime, timedelta
+from datetime import datetime
 from google import genai
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -81,7 +81,7 @@ def registrar_resultado_db(prediccion_id, goles_l, goles_v):
     conn.close()
     return filas_afectadas > 0
 
-# --- 4. MOTOR DE CALENDARIO DIARIO OPTIMIZADO ---
+# --- 4. MOTOR DE CALENDARIO DIARIO ---
 def consultar_partidos_del_dia():
     headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
     url_matches = "https://api.football-data.org/v4/matches"
@@ -106,13 +106,13 @@ def consultar_partidos_del_dia():
         print(f"Error en calendario: {e}")
     return partidos_detectados
 
-# --- 5. AGENTE COGNITIVO IA ---
+# --- 5. API 3: AGENTE COGNITIVO IA (RESPALDO INTELIGENTE) ---
 def investigar_equipo_con_ia(nombre_equipo):
     prompt = f"""
-    Investiga el rendimiento deportivo y promedios de goles recientes del equipo o selección: "{nombre_equipo}".
+    Investiga el rendimiento deportivo actual y promedios de goles del equipo o selección nacional de fútbol: "{nombre_equipo}".
     Extrae promedios estimados de goles marcados (gf), recibidos (gc), córners y tarjetas por partido basados en sus juegos de este año.
     Devuelve ÚNICAMENTE un objeto JSON limpio, sin bloques markdown de código, con esta estructura exacta:
-    {{"name": "{nombre_equipo}", "gf": 1.40, "gc": 1.10, "corners": 4.9, "tarjetas": 2.1, "informacion_historica": true}}
+    {{"name": "{nombre_equipo}", "gf": 1.45, "gc": 1.15, "corners": 4.8, "tarjetas": 2.2, "informacion_historica": true}}
     """
     try:
         if isinstance(CUOTAS_MONITOR["gemini"], int) and CUOTAS_MONITOR["gemini"] > 0:
@@ -125,12 +125,13 @@ def investigar_equipo_con_ia(nombre_equipo):
     except: 
         return None
 
-# --- 6. EXTRACTOR DE ESTADÍSTICAS CONTROLADO ---
+# --- 6. EXTRACTOR EN CASCADA REAL (SOPORTE DE LAS 3 APIS INDEPENDIENTES) ---
 def buscar_datos_equipo(nombre_equipo, codigo_liga_sugerido=None):
     nombre_limpio = nombre_equipo.split("(")[0].strip()
-    headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
     
+    # --- API 1: FOOTBALL-DATA.ORG ---
     if codigo_liga_sugerido and codigo_liga_sugerido in LIGAS_MAPA:
+        headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
         url_fd = f"https://api.football-data.org/v4/competitions/{codigo_liga_sugerido}/standings"
         try:
             res = requests.get(url_fd, headers=headers_fd, timeout=4)
@@ -144,8 +145,10 @@ def buscar_datos_equipo(nombre_equipo, codigo_liga_sugerido=None):
                                 'name': row['team']['name'], 'gf': row['goalsFor'] / partidos, 'gc': row['goalsAgainst'] / partidos, 
                                 'corners': 5.1, 'tarjetas': 2.2, 'fuente': f"Football-Data ({codigo_liga_sugerido})"
                             }
-        except: pass
+        except: 
+            pass
 
+    # --- API 2: API-SPORTS (SOPORTE COMPLETO PARA COLOMBIA, PORTUGAL, SELECCIONES Y AMISTOSOS) ---
     url_as = "https://v3.football.api-sports.io/teams"
     headers_as = {"x-apisports-key": API_SPORTS_KEY}
     try:
@@ -162,11 +165,15 @@ def buscar_datos_equipo(nombre_equipo, codigo_liga_sugerido=None):
             if fixtures:
                 g_favor = sum([(f['goals']['home'] if f['teams']['home']['id'] == team_id else f['goals']['away']) for f in fixtures if f['goals']['home'] is not None])
                 g_contra = sum([(f['goals']['away'] if f['teams']['home']['id'] == team_id else f['goals']['home']) for f in fixtures if f['goals']['home'] is not None])
-                partidos = len(fixtures)
-                return {'name': nombre_oficial, 'gf': g_favor / partidos, 'gc': g_contra / partidos, 'corners': 4.8, 'tarjetas': 2.4, 'fuente': "Historial API-Sports"}
-    except: pass
+                partidos = len(fixtures) if len(fixtures) > 0 else 1
+                return {
+                    'name': nombre_oficial, 'gf': g_favor / partidos, 'gc': g_contra / partidos, 
+                    'corners': 4.8, 'tarjetas': 2.4, 'fuente': "Historial API-Sports"
+                }
+    except: 
+        pass
 
-    # CORREGIDO: Enlace directo y limpio a la función de IA
+    # --- API 3: GEMINI IA ---
     return investigar_equipo_con_ia(nombre_limpio)
 
 # --- 7. POISSON Y VALOR DE CUOTAS ---
@@ -212,35 +219,48 @@ async def cmd_start(message: types.Message):
 
 @dp.message(Command("hoy"))
 async def cmd_hoy(message: types.Message):
-    await procesar_y_enviar_agenda(message.chat.id, message)
+    await procesar_y_enviar_agenda(message, de_boton=False)
 
 @dp.callback_query(lambda c: c.data == "ver_partidos_hoy")
 async def boton_hoy_callback(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
-    await procesar_y_enviar_agenda(callback_query.from_user.id, callback_query.message, editar=True)
+    await callback_query.answer()
+    await procesar_y_enviar_agenda(callback_query.message, de_boton=True)
 
-async def procesar_y_enviar_agenda(chat_id, target_msg, editar=False):
-    aviso = "⏳ Sincronizando agenda global de partidos (1 Request)..."
-    msg_espera = await target_msg.edit_text(aviso) if editar else await bot.send_message(chat_id, aviso)
+async def procesar_y_enviar_agenda(message: types.Message, de_boton=False):
+    if de_boton:
+        await message.edit_text("⏳ Sincronizando agenda global de partidos (1 Request)...")
+    else:
+        msg_espera = await message.reply("⏳ Sincronizando agenda global de partidos (1 Request)...")
     
     agenda = consultar_partidos_del_dia()
+    
     if not agenda:
         vacio = "📅 *AGENDA DE HOY:*\n\nℹ️ No hay partidos de tus ligas programados para hoy en los servidores."
-        return await msg_espera.edit_text(vacio, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+        if de_boton:
+            return await message.edit_text(vacio, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+        else:
+            return await msg_espera.edit_text(vacio, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
         
     texto = "📅 *PARTIDOS DETECTADOS HOY:*\n\n"
     for p in agenda:
         texto += f"🏆 *[{p['liga']}]* `{p['hora']}` | `{p['local']} vs {p['visitante']}`\n"
     texto += "\n💡 _Copia el cruce y usa los botones para evaluarlo de inmediato._"
-    await msg_espera.edit_text(texto, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+    
+    if de_boton:
+        await message.edit_text(texto, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+    else:
+        await msg_espera.edit_text(texto, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
 
 @dp.message(Command("analizar"))
 async def analizar_partido(message: types.Message):
-    texto = message.text.replace("@Cristian_prediccionesbot", "").replace("/analizar", "").strip()
-    if " vs " not in texto: 
+    # CORREGIDO: Limpieza dinámica estricta que elimina el comando y el username del bot si viene con el @
+    partes = message.text.split(" ")
+    argumentos = " ".join(partes[1:]).strip()
+    
+    if " vs " not in argumentos: 
         return await message.reply("⚠️ Usa: `/analizar Equipo A vs Equipo B`", reply_markup=obtener_teclado_interactivo())
     
-    eq_local, eq_visit = texto.split(" vs ")
+    eq_local, eq_visit = argumentos.split(" vs ")
     msg = await message.reply("⏳ *[░░░░░░░░░░] 0%* Abriendo pasarela optimizada...")
 
     liga_detectada = None
@@ -257,7 +277,7 @@ async def analizar_partido(message: types.Message):
     stats_visit = buscar_datos_equipo(eq_visit, liga_detectada)
 
     if not stats_local or not stats_visit:
-        return await msg.edit_text("❌ Error. Datos insuficientes en los servidores de consulta.", reply_markup=obtener_teclado_interactivo())
+        return await msg.edit_text("❌ Error. Datos insuficientes en las 3 APIs para procesar el cruce.", reply_markup=obtener_teclado_interactivo())
 
     await msg.edit_text("⏳ *[█████████░] 90%* Cruzando Poisson y calculando valor de cuota justa...")
     estadisticas = calcular_probabilidades(stats_local, stats_visit)
@@ -265,8 +285,6 @@ async def analizar_partido(message: types.Message):
     tarjetas_avg = round((stats_local['tarjetas'] + stats_visit['tarjetas']) / 2, 1)
     
     partido_id = guardar_prediccion(stats_local['name'], stats_visit['name'], estadisticas['prob_over_25'], estadisticas['prob_btts'])
-    
-    # CORREGIDO: Nombre de la función de llamada de análisis alineado perfectamente
     idea_apuesta = consultar_gemini_analisis(estadisticas, stats_local['name'], stats_visit['name'], corners_avg, tarjetas_avg)
     token_info = f"{CUOTAS_MONITOR['gemini']}/15 RPM" if isinstance(CUOTAS_MONITOR['gemini'], int) else "Free"
     
@@ -296,14 +314,14 @@ async def registrar_resultado(message: types.Message):
 
 @dp.message(Command("efectividad"))
 async def mostrar_efectividad(message: types.Message):
-    await procesar_y_enviar_efectividad(message.chat.id, message)
+    await procesar_y_enviar_efectividad(message, de_boton=False)
 
 @dp.callback_query(lambda c: c.data == "ver_efectividad_ia")
 async def boton_efectividad_callback(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
-    await procesar_y_enviar_efectividad(callback_query.from_user.id, callback_query.message, editar=True)
+    await callback_query.answer()
+    await procesar_y_enviar_efectividad(callback_query.message, de_boton=True)
 
-async def procesar_y_enviar_efectividad(chat_id, target_msg, editar=False):
+async def procesar_y_enviar_efectividad(message: types.Message, de_boton=False):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT local, visitante, prob_over, prob_btts, goles_local_real, goles_visit_real FROM predicciones WHERE estado = 'FINALIZADO'")
@@ -311,20 +329,21 @@ async def procesar_y_enviar_efectividad(chat_id, target_msg, editar=False):
     conn.close()
     if not partidos:
         vacio = "ℹ️ Sin registros finalizados aún."
-        if editar: return await target_msg.edit_text(vacio, reply_markup=obtener_teclado_interactivo())
-        else: return await target_msg.reply(vacio, reply_markup=obtener_teclado_interactivo())
+        if de_boton: return await message.edit_text(vacio, reply_markup=obtener_teclado_interactivo())
+        else: return await message.reply(vacio, reply_markup=obtener_teclado_interactivo())
     total = len(partidos)
     ac_over = ac_btts = 0
     for p in partidos:
         if (p[2] >= 50.0 and (p[4]+p[5]) > 2) or (p[2] < 50.0 and (p[4]+p[5]) <= 2): ac_over += 1
         if (p[3] >= 50.0 and (p[4]>0 and p[5]>0)) or (p[3] < 50.0 and not (p[4]>0 and p[5]>0)): ac_btts += 1
     texto_final = f"📊 *REPORTE DE EFECTIVIDAD*\n📉 Partidos: {total}\n🎯 Over 2.5: `{round((ac_over/total)*100,1)}%` acierto\n🔥 Ambos Anotan: `{round((ac_btts/total)*100,1)}%` acierto"
-    if editar: await target_msg.edit_text(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
-    else: await bot.send_message(chat_id, texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+    if de_boton: await message.edit_text(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+    else: await message.reply(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
 
 @dp.message(Command("equipo"))
 async def consulting_equipo_solo(message: types.Message):
-    nombre = message.text.replace("@Cristian_prediccionesbot", "").replace("/equipo", "").strip()
+    partes = message.text.split(" ")
+    nombre = " ".join(partes[1:]).strip()
     if not nombre: return await message.reply("⚠️ Indica el equipo.", reply_markup=obtener_teclado_interactivo())
     msg = await message.reply("🔍 Buscando...")
     data = buscar_datos_equipo(nombre)
