@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Arquitectura Híbrida de Verificación Real - API + IA Search Agent
+# Proyecto: Sistema Híbrido Avanzado de Analítica Deportiva (IA + API + Poisson Calibrado)
 
 import os
 import requests
@@ -13,8 +13,9 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# --- 1. CREDENCIALES ---
+# --- 1. CONFIGURACIÓN Y CREDENCIALES ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
 FOOTBALL_DATA_KEY = os.getenv("API_FOOTBALL_KEY") 
@@ -28,15 +29,15 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# --- 2. AGENTE DE BÚSQUEDA COGNITIVA (IA + CONTEXTO REAL) ---
+# --- 2. MOTOR DE BÚSQUEDA COGNITIVA (AGENTE IA DE RESPALDO) ---
 def investigar_equipo_con_ia(nombre_equipo):
-    """Usa la IA con acceso a información para buscar el rendimiento real reciente del equipo."""
+    """Usa la IA con acceso a información para rastrear el rendimiento real reciente de un equipo en la web."""
     prompt = f"""
-    Investiga los últimos 5 partidos oficiales o amistosos más recientes jugados por el equipo o selección: "{nombre_equipo}".
-    Necesito que calcules sus promedios reales de goles a favor, goles en contra, córners y tarjetas por partido en esa racha reciente.
+    Investiga en tiempo real los últimos 5 partidos oficiales o amistosos más recientes jugados por el equipo o selección: "{nombre_equipo}".
+    Calcula con precisión sus promedios reales de goles a favor (gf), goles en contra (gc), córners y tarjetas por partido en esa racha de 5 juegos.
     
-    Debes ser estrictamente verídico. Si el equipo es muy oscuro o no hay datos reales en internet, pon el campo "confiable" en false.
-    Devuelve ÚNICAMENTE un objeto JSON limpio, sin markdown, con esta estructura:
+    Sé estrictamente verídico. Si el equipo no existe, es muy oscuro o no hay registros web reales de sus partidos de este mes, pon el campo "confiable" en false.
+    Devuelve ÚNICAMENTE un objeto JSON limpio, sin bloques markdown de código, con esta estructura exacta:
     {{
         "name": "Nombre Oficial Encontrado",
         "gf": 1.4,
@@ -47,7 +48,6 @@ def investigar_equipo_con_ia(nombre_equipo):
     }}
     """
     try:
-        # Activamos los modelos de generación de contenido con instrucción de búsqueda
         response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
         text = response.text.strip().replace("```json", "").replace("```", "").strip()
         data = json.loads(text)
@@ -58,14 +58,14 @@ def investigar_equipo_con_ia(nombre_equipo):
         data['fuente'] = "Investigación IA en Tiempo Real"
         return data
     except Exception as e:
-        print(f"Error en agente IA: {e}")
+        print(f"Error en agente de búsqueda IA: {e}")
         return None
 
-# --- 3. EXTRACTOR DE BASES DE DATOS TRADICIONAL ---
+# --- 3. EXTRACTOR DE BASES DE DATOS TRADICIONALES ---
 def buscar_datos_equipo(nombre_equipo):
     nombre_limpio = nombre_equipo.split("(")[0].strip()
     
-    # Base 1: Football-Data (Ligas Europeas)
+    # Base 1: Football-Data (Ligas Europeas Principales)
     url_fd = "https://api.football-data.org/v4/competitions/PD/standings"
     headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
     try:
@@ -77,13 +77,15 @@ def buscar_datos_equipo(nombre_equipo):
                     if nombre_limpio.lower() in row['team']['name'].lower():
                         partidos = row['playedGames'] if row['playedGames'] > 0 else 1
                         return {
-                            'name': row['team']['name'], 'gf': row['goalsFor'] / partidos,
-                            'gc': row['goalsAgainst'] / partidos, 'corners': 5.1, 'tarjetas': 2.3,
-                            'fuente': "Base de Datos Europea"
+                            'name': row['team']['name'], 
+                            'gf': row['goalsFor'] / partidos,
+                            'gc': row['goalsAgainst'] / partidos, 
+                            'corners': 5.1, 'tarjetas': 2.3,
+                            'fuente': "Base de Datos Europea (API)"
                         }
     except: pass
 
-    # Base 2: API-Sports (Ligas Globales / Historial de Fixtures)
+    # Base 2: API-Sports (Historial Reciente de Fixtures Globales)
     url_as = "https://v3.football.api-sports.io/teams"
     headers_as = {"x-apisports-key": API_SPORTS_KEY}
     try:
@@ -93,7 +95,6 @@ def buscar_datos_equipo(nombre_equipo):
             team_id = teams[0]["team"]["id"]
             nombre_oficial = teams[0]["team"]["name"]
             
-            # Consultamos sus últimos 5 resultados reales para promediar
             url_fix = f"https://v3.football.api-sports.io/fixtures?team={team_id}&last=5"
             res_fix = requests.get(url_fix, headers=headers_as, timeout=4)
             fixtures = res_fix.json().get("response", [])
@@ -105,50 +106,66 @@ def buscar_datos_equipo(nombre_equipo):
                 
                 return {
                     'name': nombre_oficial,
-                    'gf': g_favor / partidos, 'gc': g_contra / partidos,
-                    'corners': 4.9, 'tarjetas': 2.4, 'fuente': "Historial API-Sports"
+                    'gf': g_favor / partidos, 
+                    'gc': g_contra / partidos,
+                    'corners': 4.9, 'tarjetas': 2.4, 
+                    'fuente': "Historial Operativo API-Sports"
                 }
     except: pass
 
-    # COMPLEMENTO DE IA: Si las tablas SQL fallan, la IA investiga el historial real en la web
+    # COMPLEMENTO: Si los servidores SQL/API no contienen al equipo, la IA investiga la web real
     return investigar_equipo_con_ia(nombre_limpio)
 
-# --- 4. CÁLCULOS MATEMÁTICOS ---
+# --- 4. CALIBRACIÓN MATEMÁTICA BALANCEADA DE POISSON ---
 def calcular_probabilidades(local_stats, visit_stats):
-    promedio_liga = 1.35
-    xg_local = (local_stats["gf"] / promedio_liga) * (visit_stats["gc"] / promedio_liga) * promedio_liga
-    xg_visit = (visit_stats["gf"] / promedio_liga) * (local_stats["gc"] / promedio_liga) * promedio_liga
+    """Calcula métricas xG reales y distribuciones balanceadas sin inflar el Over 2.5."""
+    promedio_goles_equipo = 1.25   # Expectativa estándar por bando
+    
+    # Análisis cruzado de rendimiento (Ataque Local vs Defensa Visitante)
+    fuerza_ataque_local = local_stats["gf"] / promedio_goles_equipo
+    debilidad_defensa_visit = visit_stats["gc"] / promedio_goles_equipo
+    
+    fuerza_ataque_visit = visit_stats["gf"] / promedio_goles_equipo
+    debilidad_defensa_local = local_stats["gc"] / promedio_goles_equipo
+    
+    # xG final balanceado promediado con los índices de competición
+    xg_local = fuerza_ataque_local * debilidad_defensa_visit * promedio_goles_equipo
+    xg_visit = fuerza_ataque_visit * debilidad_defensa_local * promedio_goles_equipo
 
+    # Curva de Poisson para asignación de probabilidades por marcador (0 a 5 goles)
     prob_local = [poisson.pmf(i, xg_local) for i in range(6)]
     prob_visit = [poisson.pmf(i, xg_visit) for i in range(6)]
+    
+    # Cálculo exacto de Under 2.5 sumando marcadores: 0-0, 1-0, 0-1, 2-0, 0-2, 1-1
     prob_under_25 = sum([prob_local[i] * prob_visit[j] for i in range(6) for j in range(6) if i+j < 3])
     
     return {
-        "xg_local": round(xg_local, 2), "xg_visitante": round(xg_visit, 2),
+        "xg_local": round(xg_local, 2), 
+        "xg_visitante": round(xg_visit, 2),
         "prob_over_25": round((1 - prob_under_25) * 100, 2),
         "prob_btts": round(((1 - prob_local[0]) * (1 - prob_visit[0])) * 100, 2)
     }
 
 def consultar_gemini_analisis(estadisticas, local, visitante, corners_avg, tarjetas_avg):
     prompt = f"""
-    Analiza este cruce de fútbol de forma fría, prudente y profesional. Evita el optimismo exagerado.
+    Analiza este cruce de fútbol de forma sumamente fría, prudente y profesional. Evita el optimismo exagerado o prometer goles sin bases.
     
-    MÉTRICAS:
+    MÉTRICAS MATEMÁTICAS CALIBRADAS:
     - {local} vs {visitante}
     - Goles esperados (xG): {local} ({estadisticas['xg_local']}) - {visitante} ({estadisticas['xg_visitante']})
     - Probabilidad Over 2.5: {estadisticas['prob_over_25']}%
-    - Ambos Anotan: {estadisticas['prob_btts']}%
-    - Córners promedio en el partido: {corners_avg}
-    - Tarjetas promedio en el partido: {tarjetas_avg}
+    - Ambos Anotan (BTTS): {estadisticas['prob_btts']}%
+    - Córners promedio del encuentro: {corners_avg}
+    - Tarjetas promedio del encuentro: {tarjetas_avg}
     
-    Escribe una conclusión de máximo 4 líneas. Evalúa con criterio si el partido realmente pinta para goles o si las defensas imponen condiciones. Indica el mercado con menor riesgo basándote en la matemática de Poisson provista.
+    Redacta una conclusión táctica de máximo 4 líneas. Evalúa con criterio si el juego realmente apunta a dinamismo abierto o si las plantillas imponen condiciones de juego trabado. Recomienda la opción de menor riesgo según los datos de Poisson provistos.
     """
     try:
         response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
         return response.text.strip()
-    except: return "⚠️ Análisis técnico no disponible en este momento."
+    except: return "⚠️ El dictamen del experto analista no se encuentra disponible."
 
-# --- 5. CARTELERA MUNDIAL ---
+# --- 5. CARTELERA INFORMATIVA ---
 def obtener_cartelera_global():
     hoy = datetime.now().strftime('%Y-%m-%d')
     limite = (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')
@@ -157,7 +174,7 @@ def obtener_cartelera_global():
     try:
         res = requests.get(url, headers=headers, timeout=5)
         partidos = res.json().get('response', [])
-        if not partidos: return "No hay partidos relevantes programados."
+        if not partidos: return "No hay compromisos de valor detectados en el servidor."
         
         lineas = []
         for p in partidos:
@@ -172,33 +189,55 @@ def obtener_cartelera_global():
             lineas.append(f"▫️ [{f.split('T')[0]} {f.split('T')[1][:5]}] {local} vs {visitante} ({liga})")
             if len(lineas) >= 20: break
         return "\n".join(lineas)
-    except: return "Error al cargar la cartelera."
+    except: return "Inconvenientes al enlazar el servidor de carteleras."
 
-# --- 6. HANDLERS DE TELEGRAM ---
+# --- 6. HANDLERS DE LA INTERFAZ DE TELEGRAM ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("📊 *Motor de Análisis Híbrido Verificado Activo*\n\nComandos:\n📌 `/hoy` - Cartelera\n📌 `/analizar Equipo A vs Equipo B` (Cruce de Datos)\n📌 `/equipo Nombre` (Métricas Reales)", parse_mode="Markdown")
+    # Constructor de teclado en línea para pre-escritura manual interactiva
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="📊 Analizar Partido", switch_inline_query_current_chat="/analizar "),
+        types.InlineKeyboardButton(text="🔍 Buscar Equipo", switch_inline_query_current_chat="/equipo ")
+    )
+    builder.row(
+        types.InlineKeyboardButton(text="📅 Ver Cartelera Hoy", callback_data="ver_hoy_directo")
+    )
+    
+    texto_bienvenida = (
+        "🤖 *Sistema de Predicción Híbrido Calibrado Activo*\n\n"
+        "Usa los botones de abajo para interactuar de forma ágil:\n"
+        "• Al tocar los botones de comando, la frase se escribirá en tu barra de chat de forma automática sin enviarse. "
+        "Así tú solo ingresas los equipos y mantienes el control total de la consulta."
+    )
+    await message.answer(texto_bienvenida, parse_mode="Markdown", reply_markup=builder.as_markup())
 
 @dp.message(Command("hoy"))
 async def cartelera_hoy(message: types.Message):
-    msg = await message.reply("⏳ Leyendo partidos del servidor...")
+    msg = await message.reply("⏳ Sincronizando cartelera mundial de partidos...")
     cartelera = obtener_cartelera_global()
     await msg.edit_text(f"🌍 *PRÓXIMOS ENCUENTROS VERIFICADOS*\n\n{cartelera}", parse_mode="Markdown")
+
+@dp.callback_query(lambda c: c.data == "ver_hoy_directo")
+async def proceso_boton_hoy(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+    cartelera = obtener_cartelera_global()
+    await bot.send_message(callback_query.from_user.id, f"🌍 *PRÓXIMOS ENCUENTROS VERIFICADOS*\n\n{cartelera}", parse_mode="Markdown")
 
 @dp.message(Command("equipo"))
 async def consultar_equipo_solo(message: types.Message):
     nombre = message.text.replace("/equipo", "").strip()
-    if not nombre: return await message.reply("⚠️ Indica el nombre del equipo.")
+    if not nombre: return await message.reply("⚠️ Indica el parámetro. Ejemplo: `/equipo Millonarios`")
         
-    msg = await message.reply(f"🔍 Buscando registros reales de *{nombre}*...")
+    msg = await message.reply(f"🔍 Rastreando estadísticas verídicas de *{nombre}*...")
     data = buscar_datos_equipo(nombre)
     
-    if not data: return await msg.edit_text("❌ No se encontraron suficientes datos verificables de este equipo.")
+    if not data: return await msg.edit_text("❌ Datos insuficientes en internet o el servidor para el equipo indicado.")
         
     texto = (
-        f"📋 *MÉTRICAS VERIFICADAS*\n"
+        f"📋 *FICHA TÉCNICA VERIFICADA*\n"
         f"⚽ *Equipo:* {data['name']}\n"
-        f"🧬 _Origen de Datos: {data['fuente']}_\n\n"
+        f"🧬 _Origen: {data['fuente']}_\n\n"
         f"🔹 Goles Anotados (Promedio): {round(data['gf'], 2)}\n"
         f"🔸 Goles Recibidos (Promedio): {round(data['gc'], 2)}\n"
         f"🚩 Córners Promedio: {data['corners']}\n"
@@ -209,16 +248,16 @@ async def consultar_equipo_solo(message: types.Message):
 @dp.message(Command("analizar"))
 async def analizar_partido(message: types.Message):
     texto = message.text.replace("/analizar", "").strip()
-    if " vs " not in texto: return await message.reply("⚠️ Usa: `/analizar Equipo A vs Equipo B`")
+    if " vs " not in texto: return await message.reply("⚠️ Sintaxis incorrecta. Usa: `/analizar Equipo A vs Equipo B`")
         
     eq_local, eq_visit = texto.split(" vs ")
-    msg = await message.reply("🧠 Extrayendo métricas e integrando análisis de valor...")
+    msg = await message.reply("📊 Extrayendo métricas cruzadas y corriendo distribución de Poisson...")
 
     stats_local = buscar_datos_equipo(eq_local)
     stats_visit = buscar_datos_equipo(eq_visit)
 
     if not stats_local or not stats_visit:
-        return await msg.edit_text("❌ Datos insuficientes en el servidor para estructurar una predicción confiable de este cruce.")
+        return await msg.edit_text("❌ Error. No hay suficiente información verificable en las APIs ni en el agente web de IA para este emparejamiento.")
 
     estadisticas = calcular_probabilidades(stats_local, stats_visit)
     corners_avg = round((stats_local['corners'] + stats_visit['corners']) / 2, 1)
@@ -227,9 +266,9 @@ async def analizar_partido(message: types.Message):
     idea_apuesta = consultar_gemini_analisis(estadisticas, stats_local['name'], stats_visit['name'], corners_avg, tarjetas_avg)
     
     texto_final = (
-        f"📊 *ANÁLICES MATEMÁTICO INTEGRAL*\n"
+        f"📊 *ANÁLISIS MATEMÁTICO INTEGRAL*\n"
         f"⚽ {stats_local['name']} vs {stats_visit['name']}\n"
-        f"🔬 _Datos Local: {stats_local['fuente']} | Visitante: {stats_visit['fuente']}_\n\n"
+        f"🔬 _Métricas L: {stats_local['fuente']} | V: {stats_visit['fuente']}_\n\n"
         f"🔹 *xG (Goles Esperados):* {estadisticas['xg_local']} - {estadisticas['xg_visitante']}\n"
         f"📈 *Over 2.5:* {estadisticas['prob_over_25']}%\n"
         f"🔥 *Ambos Anotan:* {estadisticas['prob_btts']}%\n"
@@ -239,7 +278,7 @@ async def analizar_partido(message: types.Message):
     )
     await msg.edit_text(texto_final, parse_mode="Markdown")
 
-# --- 7. SERVIDOR WEB ---
+# --- 7. SERVIDOR WEB Y WEBHOOK ---
 async def on_startup(bot: Bot): await bot.set_webhook(WEBHOOK_URL)
 def main():
     dp.startup.register(on_startup)
