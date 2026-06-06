@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium - Totalmente Calibrado, Híbrido y Blindado
+# Proyecto: Value Betting Engine Premium - Edición Mundial & Calendario en Tiempo Real
 
 import os
 import requests
@@ -31,39 +31,36 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
 DB_NAME = "apuestas.db"
+LIGAS_GRATUITAS = ["WC", "CL", "PL", "ELC", "FL1", "BL1", "SA", "PD", "PPL", "DED", "BSA"]
 
-# Monitor global dinámico de consumo de credenciales
 CUOTAS_MONITOR = {
     "football_data": "No consultado",
     "api_sports": "No consultado",
     "gemini": 15
 }
 
-# --- 2. COMPONENTE REUTILIZABLE: MENÚ INTERACTIVO FLOTANTE ---
+# --- 2. BOTONES INTERACTIVOS MEJORADOS ---
 def obtener_teclado_interactivo():
-    """Genera los botones interactivos que escriben en la barra sin enviar automáticamente."""
     builder = InlineKeyboardBuilder()
     builder.row(
-        types.InlineKeyboardButton(text="📊 Analizar Partido", switch_inline_query_current_chat="/analizar "),
-        types.InlineKeyboardButton(text="🔍 Buscar Equipo", switch_inline_query_current_chat="/equipo ")
+        types.InlineKeyboardButton(text="📅 Partidos de Hoy", callback_data="ver_partidos_hoy"),
+        types.InlineKeyboardButton(text="📊 Analizar Partido", switch_inline_query_current_chat="/analizar ")
     )
     builder.row(
+        types.InlineKeyboardButton(text="🔍 Buscar Equipo", switch_inline_query_current_chat="/equipo "),
         types.InlineKeyboardButton(text="📈 Ver Efectividad", callback_data="ver_efectividad_ia")
     )
     return builder.as_markup()
 
-# --- 3. GESTIÓN DE BASE DE DATOS (SQLITE) ---
+# --- 3. BASE DE DATOS ---
 def inicializar_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS predicciones (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fecha TEXT,
-            local TEXT,
-            visitante TEXT,
-            prob_over REAL,
-            prob_btts REAL,
+            fecha TEXT, local TEXT, visitante TEXT,
+            prob_over REAL, prob_btts REAL,
             goles_local_real INTEGER DEFAULT NULL,
             goles_visit_real INTEGER DEFAULT NULL,
             estado TEXT DEFAULT 'PENDIENTE'
@@ -76,10 +73,7 @@ def guardar_prediccion(local, visitante, prob_over, prob_btts):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     fecha_hoy = datetime.now().strftime('%Y-%m-%d %H:%M')
-    cursor.execute("""
-        INSERT INTO predicciones (fecha, local, visitante, prob_over, prob_btts)
-        VALUES (?, ?, ?, ?, ?)
-    """, (fecha_hoy, local, visitante, prob_over, prob_btts))
+    cursor.execute("INSERT INTO predicciones (fecha, local, visitante, prob_over, prob_btts) VALUES (?, ?, ?, ?, ?)", (fecha_hoy, local, visitante, prob_over, prob_btts))
     id_generado = cursor.lastrowid
     conn.commit()
     conn.close()
@@ -88,70 +82,79 @@ def guardar_prediccion(local, visitante, prob_over, prob_btts):
 def registrar_resultado_db(prediccion_id, goles_l, goles_v):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE predicciones 
-        SET goles_local_real = ?, goles_visit_real = ?, estado = 'FINALIZADO'
-        WHERE id = ?
-    """, (goles_l, goles_v, prediccion_id))
+    cursor.execute("UPDATE predicciones SET goles_local_real = ?, goles_visit_real = ?, estado = 'FINALIZADO' WHERE id = ?", (goles_l, goles_v, prediccion_id))
     filas_afectadas = cursor.rowcount
     conn.commit()
     conn.close()
     return filas_afectadas > 0
 
-# --- 4. MOTOR DE BÚSQUEDA COGNITIVA (AGENTE IA DE RESPALDO) ---
+# --- 4. MOTOR DE CALENDARIO DIARIO (NUEVO COMPONENTE) ---
+def consultar_partidos_del_dia():
+    """Consulta la agenda de partidos programados para la fecha de hoy en las ligas del plan."""
+    headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
+    hoy_str = datetime.now().strftime('%Y-%m-%d')
+    partidos_detectados = []
+
+    for liga in LIGAS_GRATUITAS:
+        url_matches = f"https://api.football-data.org/v4/competitions/{liga}/matches"
+        try:
+            # Filtramos directo por la fecha actual en la API
+            res = requests.get(url_matches, headers=headers_fd, params={"dateFrom": hoy_str, "dateTo": hoy_str}, timeout=3)
+            if res.status_code == 200:
+                matches = res.json().get("matches", [])
+                for m in matches:
+                    partidos_detectados.append({
+                        "liga": liga,
+                        "local": m["homeTeam"]["name"],
+                        "visitante": m["awayTeam"]["name"],
+                        "hora": m["utcDate"][11:16]
+                    })
+        except:
+            pass
+    return partidos_detectados
+
+# --- 5. AGENTE COGNITIVO IA ---
 def investigar_equipo_con_ia(nombre_equipo):
-    """Rastrea el rendimiento reciente de un equipo. Si la liga está inactiva, computa tendencias de peso."""
     prompt = f"""
     Investiga el rendimiento deportivo y goles recientes de: "{nombre_equipo}".
-    Si compite en liga local actual, extrae sus métricas de los últimos 5 partidos oficiales.
+    Si compite en liga local o selección actual, extrae sus métricas de los últimos 5 partidos oficiales.
     Si el torneo está en pausa o la data es escasa, deduce promedios realistas basados en su desempeño histórico cercano.
-    
     Devuelve ÚNICAMENTE un objeto JSON limpio, sin bloques markdown de código, con esta estructura exacta:
-    {{
-        "name": "Nombre Oficial Encontrado",
-        "gf": 1.35,
-        "gc": 1.15,
-        "corners": 4.8,
-        "tarjetas": 2.2,
-        "informacion_historica": true
-    }}
+    {{"name": "Nombre Oficial Encontrado", "gf": 1.35, "gc": 1.15, "corners": 4.8, "tarjetas": 2.2, "informacion_historica": true}}
     """
     try:
         if isinstance(CUOTAS_MONITOR["gemini"], int) and CUOTAS_MONITOR["gemini"] > 0:
             CUOTAS_MONITOR["gemini"] -= 1
-            
         response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
         text = response.text.strip().replace("```json", "").replace("```", "").strip()
         data = json.loads(text)
         data['fuente'] = "Inferencia de Tendencia Histórica (IA)"
         return data
-    except:
-        return None
+    except: return None
 
-# --- 5. EXTRACTOR DE BASES DE DATOS TRADICIONALES ---
+# --- 6. EXTRACTOR DE ESTADÍSTICAS ---
 def buscar_datos_equipo(nombre_equipo):
     nombre_limpio = nombre_equipo.split("(")[0].strip()
-    
-    # Base 1: Football-Data
-    url_fd = "https://api.football-data.org/v4/competitions/PD/standings"
     headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-    try:
-        res = requests.get(url_fd, headers=headers_fd, timeout=4)
-        if "X-Requests-Available-Minute" in res.headers:
-            CUOTAS_MONITOR["football_data"] = f"{res.headers['X-Requests-Available-Minute']} req/min"
-        if res.status_code == 200:
-            tabla = next((t for t in res.json().get('standings', []) if t['type'] == 'TOTAL'), None)
-            if tabla:
-                for row in tabla['table']:
-                    if nombre_limpio.lower() in row['team']['name'].lower():
-                        partidos = row['playedGames'] if row['playedGames'] > 0 else 1
-                        return {
-                            'name': row['team']['name'], 'gf': row['goalsFor'] / partidos, 'gc': row['goalsAgainst'] / partidos, 
-                            'corners': 5.2, 'tarjetas': 2.1, 'fuente': "Base de Datos Europea (API)"
-                        }
-    except: pass
+    
+    for liga in LIGAS_GRATUITAS:
+        url_fd = f"https://api.football-data.org/v4/competitions/{liga}/standings"
+        try:
+            res = requests.get(url_fd, headers=headers_fd, timeout=3)
+            if "X-Requests-Available-Minute" in res.headers:
+                CUOTAS_MONITOR["football_data"] = f"{res.headers['X-Requests-Available-Minute']} req/min"
+            if res.status_code == 200:
+                tabla = next((t for t in res.json().get('standings', []) if t['type'] == 'TOTAL'), None)
+                if tabla:
+                    for row in tabla['table']:
+                        if nombre_limpio.lower() in row['team']['name'].lower() or row['team']['name'].lower() in nombre_limpio.lower():
+                            partidos = row['playedGames'] if row['playedGames'] > 0 else 1
+                            return {
+                                'name': row['team']['name'], 'gf': row['goalsFor'] / partidos, 'gc': row['goalsAgainst'] / partidos, 
+                                'corners': 5.2, 'tarjetas': 2.1, 'fuente': f"Football-Data ({liga})"
+                            }
+        except: pass
 
-    # Base 2: API-Sports
     url_as = "https://v3.football.api-sports.io/teams"
     headers_as = {"x-apisports-key": API_SPORTS_KEY}
     try:
@@ -169,19 +172,14 @@ def buscar_datos_equipo(nombre_equipo):
                 g_favor = sum([(f['goals']['home'] if f['teams']['home']['id'] == team_id else f['goals']['away']) for f in fixtures if f['goals']['home'] is not None])
                 g_contra = sum([(f['goals']['away'] if f['teams']['home']['id'] == team_id else f['goals']['home']) for f in fixtures if f['goals']['home'] is not None])
                 partidos = len(fixtures)
-                return {
-                    'name': nombre_oficial, 'gf': g_favor / partidos, 'gc': g_contra / partidos,
-                    'corners': 4.7, 'tarjetas': 2.5, 'fuente': "Historial Operativo API-Sports"
-                }
+                return {'name': nombre_oficial, 'gf': g_favor / partidos, 'gc': g_contra / partidos, 'corners': 4.7, 'tarjetas': 2.5, 'fuente': "Historial Operativo API-Sports"}
     except: pass
 
-    # COMPLEMENTO IA TOTALMENTE CONECTADO Y REPARADO
     return investigar_equipo_con_ia(nombre_limpio)
 
-# --- 6. DISTRIBUCIÓN DE POISSON CALIBRADA Y VALOR DE CUOTAS ---
+# --- 7. POISSON Y VALOR DE CUOTAS ---
 def calcular_probabilidades(local_stats, visit_stats):
     promedio_goles_equipo = 1.25
-    
     fuerza_ataque_local = local_stats["gf"] / promedio_goles_equipo
     debilidad_defensa_visit = visit_stats["gc"] / promedio_goles_equipo
     fuerza_ataque_visit = visit_stats["gf"] / promedio_goles_equipo
@@ -197,109 +195,99 @@ def calcular_probabilidades(local_stats, visit_stats):
     p_over = round((1 - prob_under_25) * 100, 2)
     p_btts = round(((1 - prob_local[0]) * (1 - prob_visit[0])) * 100, 2)
     
-    # Cálculo de cuotas mínimas con margen de resguardo del 5% (+EV)
     cuota_over_justa = round(100 / (p_over if p_over > 0 else 1) * 1.05, 2)
     cuota_btts_justa = round(100 / (p_btts if p_btts > 0 else 1) * 1.05, 2)
 
     return {
-        "xg_local": round(xg_local, 2), "xg_visitante": round(xg_visit, 2),
-        "prob_over_25": p_over, "prob_btts": p_btts,
-        "cuota_over_minima": cuota_over_justa if cuota_over_justa < 15.0 else 1.10,
-        "cuota_btts_minima": cuota_btts_justa if cuota_btts_justa < 15.0 else 1.10
+        "xg_local": round(xg_local, 2), "xg_visitante": round(xg_visit, 2), "prob_over_25": p_over, "prob_btts": p_btts,
+        "cuota_over_minima": cuota_over_justa if cuota_over_justa < 15.0 else 1.10, "cuota_btts_minima": cuota_btts_justa if cuota_btts_justa < 15.0 else 1.10
     }
 
-def consultar_gemini_analisis(estadisticas, local, visitante, corners_avg, tarjetas_avg):
-    prompt = f"""
-    Actúa como un analista experto en apuestas deportivas. Evalúa el cruce:
-    {local} vs {visitante} | xG: {estadisticas['xg_local']}-{estadisticas['xg_visitante']} | Over 2.5: {estadisticas['prob_over_25']}% (Cuota sugerida: >{estadisticas['cuota_over_minima']}) | BTTS: {estadisticas['prob_btts']}% (Cuota sugerida: >{estadisticas['cuota_btts_minima']})
-    
-    Diseña una recomendación estructurada para la sección "Crea tu apuesta" uniendo Goles, Córners combinados ({corners_avg}) y Tarjetas ({tarjetas_avg}). Redacta con frialdad y precisión en máximo 4 líneas.
-    """
+def consulting_gemini_analisis(estadisticas, local, visitante, corners_avg, tarjetas_avg):
+    prompt = f"Actúa como analista experto de apuestas. Evalúa: {local} vs {visitante} | xG: {estadisticas['xg_local']}-{estadisticas['xg_visitante']}. Sugiere una combinada corta de Goles, Córners promedio ({corners_avg}) y Tarjetas ({tarjetas_avg}) para 'Crea tu apuesta'. Máximo 3 líneas."
     try:
         if isinstance(CUOTAS_MONITOR["gemini"], int) and CUOTAS_MONITOR["gemini"] > 0:
             CUOTAS_MONITOR["gemini"] -= 1
         response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
         return response.text.strip()
-    except: return "⚠️ Análisis de valor no disponible."
+    except: return "⚠️ Análisis no disponible."
 
-# --- 7. HANDLERS DE LA INTERFAZ DE TELEGRAM ---
+# --- 8. HANDLERS TELEGRAM ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    texto = (
-        "🤖 *Value Betting Engine Premium Activo*\n\n"
-        "Usa los botones dinámicos de abajo. Al hacer clic, el comando aparecerá escrito en tu teclado de forma instantánea para que tú solo agregues los equipos:"
-    )
-    await message.answer(texto, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+    await message.answer("🤖 *Value Betting Engine Premium Activo*\nUsa el menú para ver la agenda o procesar llaves:", reply_markup=obtener_teclado_interactivo())
+
+@dp.message(Command("hoy"))
+async def cmd_hoy(message: types.Message):
+    await procesar_y_enviar_agenda(message.chat.id, message)
+
+@dp.callback_query(lambda c: c.data == "ver_partidos_hoy")
+async def boton_hoy_callback(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+    await procesar_y_enviar_agenda(callback_query.from_user.id, callback_query.message, editar=True)
+
+async def procesar_y_enviar_agenda(chat_id, target_msg, editar=False):
+    aviso = "⏳ Rastreando agenda de partidos para el día de hoy..."
+    msg_espera = await target_msg.edit_text(aviso) if editar else await bot.send_message(chat_id, aviso)
+    
+    agenda = consultar_partidos_del_dia()
+    if not agenda:
+        vacio = "📅 *AGENDA DE HOY:*\n\nℹ️ No hay partidos de las ligas del plan programados para hoy.\n_(Nota: Las ligas europeas están en receso estival de pretemporada y vísperas del Mundial)_."
+        return await msg_espera.edit_text(vacio, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+        
+    texto = "📅 *PARTIDOS PROGRAMADOS PARA HOY:*\n\n"
+    for p in agenda:
+        texto += f"🏆 *[{p['liga']}]* `{p['hora']}` | `{p['local']} vs {p['visitante']}`\n"
+    texto += "\n💡 _Copia los nombres y usa `/analizar Local vs Visitante` para procesar el valor de las cuotas._"
+    await msg_espera.edit_text(texto, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
 
 @dp.message(Command("analizar"))
 async def analizar_partido(message: types.Message):
-    # LIMPIEZA ABSOLUTA DE ALIAS EN CADENAS
     texto = message.text.replace("@Cristian_prediccionesbot", "").replace("/analizar", "").strip()
-    if " vs " not in texto: 
-        return await message.reply("⚠️ Usa: `/analizar Equipo A vs Equipo B`", reply_markup=obtener_teclado_interactivo())
-        
+    if " vs " not in texto: return await message.reply("⚠️ Usa: `/analizar Equipo A vs Equipo B`", reply_markup=obtener_teclado_interactivo())
     eq_local, eq_visit = texto.split(" vs ")
-    
-    # 🔄 PROGRESO 0%
-    msg = await message.reply("⏳ *[░░░░░░░░░░] 0%* Abriendo pasarela de peticiones...")
+    msg = await message.reply("⏳ *[░░░░░░░░░░] 0%* Iniciando consulta...")
 
-    # 🔄 PROGRESO 30%
-    await msg.edit_text(f"⏳ *[███░░░░░░░] 30%* Consultando registros de local: *{eq_local}*...")
+    await msg.edit_text(f"⏳ *[███░░░░░░░] 30%* Escaneando local: {eq_local}")
     stats_local = buscar_datos_equipo(eq_local)
-
-    # 🔄 PROGRESO 60%
-    await msg.edit_text(f"⏳ *[██████░░░░] 60%* Consultando registros de visitante: *{eq_visit}*...")
+    await msg.edit_text(f"⏳ *[██████░░░░] 60%* Escaneando visitante: {eq_visit}")
     stats_visit = buscar_datos_equipo(eq_visit)
 
     if not stats_local or not stats_visit:
-        return await msg.edit_text("❌ Error. Datos insuficientes en APIs y Agentes de IA.", reply_markup=obtener_teclado_interactivo())
+        return await msg.edit_text("❌ Datos insuficientes en servidores.", reply_markup=obtener_teclado_interactivo())
 
-    # 🔄 PROGRESO 90%
-    await msg.edit_text("⏳ *[█████████░] 90%* Operando matrices de Poisson y estimando valor de cuotas...")
-    
+    await msg.edit_text("⏳ *[█████████░] 90%* Calculando cuotas de valor (+EV)...")
     estadisticas = calcular_probabilidades(stats_local, stats_visit)
     corners_avg = round((stats_local['corners'] + stats_visit['corners']) / 2, 1)
     tarjetas_avg = round((stats_local['tarjetas'] + stats_visit['tarjetas']) / 2, 1)
     
     partido_id = guardar_prediccion(stats_local['name'], stats_visit['name'], estadisticas['prob_over_25'], estadisticas['prob_btts'])
-    idea_apuesta = consultar_gemini_analisis(estadisticas, stats_local['name'], stats_visit['name'], corners_avg, tarjetas_avg)
+    idea_apuesta = consulting_gemini_analisis(estadisticas, stats_local['name'], stats_visit['name'], corners_avg, tarjetas_avg)
+    token_info = f"{CUOTAS_MONITOR['gemini']}/15 RPM" if isinstance(CUOTAS_MONITOR['gemini'], int) else "Free"
     
-    token_gemini_info = f"{CUOTAS_MONITOR['gemini']}/15 RPM" if isinstance(CUOTAS_MONITOR['gemini'], int) else "Free"
-    
-    # 🏁 RESPUESTA FINAL CON MENÚ FLOTANTE INCORPORADO
     texto_final = (
-        f"🆔 *ANÁLISIS DE VALOR: #{partido_id}*\n"
-        f"⚽ *{stats_local['name']} vs {stats_visit['name']}*\n"
-        f"🔬 _Origen L: {stats_local['fuente']} | V: {stats_visit['fuente']}_\n\n"
-        f"📊 *PROYECCIÓN ESTADÍSTICA POISSON:*\n"
-        f"🔹 Goles Esperados (xG): {estadisticas['xg_local']} - {estadisticas['xg_visitante']}\n"
-        f"📈 Prob. Over 2.5: {estadisticas['prob_over_25']}% | *Buscar Cuota:* `{estadisticas['cuota_over_minima']}+`\n"
-        f"🔥 Prob. Ambos Anotan: {estadisticas['prob_btts']}% | *Buscar Cuota:* `{estadisticas['cuota_btts_minima']}+`\n"
-        f"🚩 Córners Promedio: ~{corners_avg} | 🟨 Tarjetas: ~{tarjetas_avg}\n\n"
-        f"🛠️ *SUGERENCIA CREA TU APUESTA (IA):*\n`{idea_apuesta}`\n\n"
-        f"📋 *MONITOR OPERATIVO DE SERVIDORES (CUOTAS):*\n"
-        f"🌐 _Football-Data:_ {CUOTAS_MONITOR['football_data']}\n"
-        f"⚡ _API-Sports:_ {CUOTAS_MONITOR['api_sports']}\n"
-        f"🧠 _Google Gemini:_ {token_gemini_info}\n\n"
-        f"📥 _Registrar marcador real:_ `/resultado {partido_id} GolesLocal-GolesVisitante`"
+        f"🆔 *ANÁLISIS DE VALOR: #{partido_id}*\n⚽ *{stats_local['name']} vs {stats_visit['name']}*\n🔬 _L: {stats_local['fuente']} | V: {stats_visit['fuente']}_\n\n"
+        f"📊 *PROYECCIÓN POISSON:*\n🔹 xG: {estadisticas['xg_local']} - {estadisticas['xg_visitante']}\n"
+        f"📈 Prob. Over 2.5: {estadisticas['prob_over_25']}% | *Cuota:* `{estadisticas['cuota_over_minima']}+`\n"
+        f"🔥 Prob. BTTS: {estadisticas['prob_btts']}% | *Cuota:* `{estadisticas['cuota_btts_minima']}+`\n"
+        f"🚩 Córners: ~{corners_avg} | 🟨 Tarjetas: ~{tarjetas_avg}\n\n"
+        f"🛠️ *CREA TU APUESTA (IA):*\n`{idea_apuesta}`\n\n"
+        f"📋 *MONITOR SERVIDORES:*\n🌐 _Football-Data:_ {CUOTAS_MONITOR['football_data']} | ⚡ _API-Sports:_ {CUOTAS_MONITOR['api_sports']} | 🧠 _Gemini:_ {token_info}\n\n"
+        f"📥 `/resultado {partido_id} GolesLocal-GolesVisitante`"
     )
     await msg.edit_text(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
 
 @dp.message(Command("resultado"))
 async def registrar_resultado(message: types.Message):
     argumentos = message.text.replace("/resultado", "").strip().split()
-    if len(argumentos) != 2: 
-        return await message.reply("⚠️ Usa: `/resultado ID Marcador` (Ej: `/resultado 1 2-1`)", reply_markup=obtener_teclado_interactivo())
-    
+    if len(argumentos) != 2: return await message.reply("⚠️ Usa: `/resultado ID Marcador`", reply_markup=obtener_teclado_interactivo())
     prediccion_id, marcador = argumentos
     try:
         goles_l, goles_v = map(int, marcador.split("-"))
         if registrar_resultado_db(prediccion_id, goles_l, goles_v):
-            await message.reply(f"✅ Marcador real del análisis *#{prediccion_id}* guardado: `{goles_l} - {goles_v}`. ¡Matriz de efectividad actualizada!", reply_markup=obtener_teclado_interactivo())
-        else:
-            await message.reply("❌ ID de análisis no encontrado en la base de datos local.", reply_markup=obtener_teclado_interactivo())
-    except: 
-        await message.reply("⚠️ Formato de marcador incorrecto. Ej: `2-1`", reply_markup=obtener_teclado_interactivo())
+            await message.reply(f"✅ Marcador real guardado: `{goles_l}-{goles_v}`.", reply_markup=obtener_teclado_interactivo())
+        else: await message.reply("❌ ID no encontrado.", reply_markup=obtener_teclado_interactivo())
+    except: await message.reply("⚠️ Formato incorrecto.", reply_markup=obtener_teclado_interactivo())
 
 @dp.message(Command("efectividad"))
 async def mostrar_efectividad(message: types.Message):
@@ -316,42 +304,29 @@ async def procesar_y_enviar_efectividad(chat_id, target_msg, editar=False):
     cursor.execute("SELECT local, visitante, prob_over, prob_btts, goles_local_real, goles_visit_real FROM predicciones WHERE estado = 'FINALIZADO'")
     partidos = cursor.fetchall()
     conn.close()
-    
     if not partidos:
-        vacio = "ℹ️ No hay registros finalizados en esta sesión. Carga marcadores usando `/resultado`."
+        vacio = "ℹ️ No hay registros finalizados en esta sesión."
         if editar: return await target_msg.edit_text(vacio, reply_markup=obtener_teclado_interactivo())
         else: return await target_msg.reply(vacio, reply_markup=obtener_teclado_interactivo())
-        
     total = len(partidos)
     ac_over = ac_btts = 0
-    
     for p in partidos:
         if (p[2] >= 50.0 and (p[4]+p[5]) > 2) or (p[2] < 50.0 and (p[4]+p[5]) <= 2): ac_over += 1
         if (p[3] >= 50.0 and (p[4]>0 and p[5]>0)) or (p[3] < 50.0 and not (p[4]>0 and p[5]>0)): ac_btts += 1
-
-    texto_final = (
-        f"📊 *REPORTE DE EFECTIVIDAD REAL*\n"
-        f"📉 *Partidos auditados:* {total}\n\n"
-        f"🎯 *Rendimiento Over/Under 2.5:* `{round((ac_over/total)*100, 1)}%` de acierto\n"
-        f"🔥 *Rendimiento Ambos Anotan:* `{round((ac_btts/total)*100, 1)}%` de acierto"
-    )
+    texto_final = f"📊 *REPORTE DE EFECTIVIDAD*\n📉 Partidos: {total}\n🎯 Over 2.5: `{round((ac_over/total)*100,1)}%` acierto\n🔥 Ambos Anotan: `{round((ac_btts/total)*100,1)}%` acierto"
     if editar: await target_msg.edit_text(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
     else: await bot.send_message(chat_id, texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
 
 @dp.message(Command("equipo"))
-async def consultar_equipo_solo(message: types.Message):
-    # LIMPIEZA ABSOLUTA DE ALIAS
+async def consulting_equipo_solo(message: types.Message):
     nombre = message.text.replace("@Cristian_prediccionesbot", "").replace("/equipo", "").strip()
-    if not nombre: return await message.reply("⚠️ Indica el nombre del equipo.", reply_markup=obtener_teclado_interactivo())
-    
-    msg = await message.reply(f"🔍 Rastreando estadísticas verídicas de *{nombre}*...")
+    if not nombre: return await message.reply("⚠️ Indica el equipo.", reply_markup=obtener_teclado_interactivo())
+    msg = await message.reply("🔍 Buscando...")
     data = buscar_datos_equipo(nombre)
-    if not data: return await msg.edit_text("❌ No se encontraron datos para este equipo.", reply_markup=obtener_teclado_interactivo())
-    
-    texto = f"📋 *MÉTRICAS VERIFICADAS*\n⚽ *Equipo:* {data['name']}\n🧬 _Origen: {data['fuente']}_\n\n🔹 Goles Anotados: {round(data['gf'], 2)}\n🔸 Goles Recibidos: {round(data['gc'], 2)}\n🚩 Córners: {data['corners']}\n🟨 Tarjetas: {data['tarjetas']}\n"
+    if not data: return await msg.edit_text("❌ Sin datos.", reply_markup=obtener_teclado_interactivo())
+    texto = f"📋 *MÉTRICAS VERIFICADAS*\n⚽ *Equipo:* {data['name']}\n🧬 _Origen: {data['fuente']}_\n\n🔹 Goles Anotados: {round(data['gf'], 2)}\n🔸 Goles Recibidos: {round(data['gc'], 2)}\n"
     await msg.edit_text(texto, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
 
-# --- 8. SERVIDOR WEB Y ACTIVACIÓN ---
 async def on_startup(bot: Bot): 
     inicializar_db()
     await bot.set_webhook(WEBHOOK_URL)
