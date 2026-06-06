@@ -85,11 +85,16 @@ def obtener_stats_api_sports(nombre_equipo):
 
         # Calculamos promedios
         partidos = len(fixtures) if len(fixtures) > 0 else 1
+        
+        # Parche anticolapso: Si el equipo no tiene historial, le damos 0.8 goles de base
+        gf = (goles_favor / partidos) if goles_favor > 0 else 0.8
+        gc = (goles_contra / partidos) if goles_contra > 0 else 0.8
+
         stats = {
-            'gf_home': goles_favor / partidos, 'gc_home': goles_contra / partidos,
-            'gf_away': goles_favor / partidos, 'gc_away': goles_contra / partidos,
-            'corners': 5.2, # Promedio estadístico genérico inyectado
-            'tarjetas': 2.8 # Promedio estadístico genérico inyectado
+            'gf_home': gf, 'gc_home': gc,
+            'gf_away': gf, 'gc_away': gc,
+            'corners': 5.2,
+            'tarjetas': 2.8 
         }
         return stats, nombre_oficial
     except Exception as e:
@@ -135,39 +140,52 @@ def consultar_gemini(estadisticas, local, visitante):
         return response.text.strip()
     except: return "⚠️ Error consultando a la IA."
 
-# --- 5. CARTELERA MUNDIAL (API-SPORTS) ---
 # --- 5. CARTELERA MUNDIAL CLASIFICADA (API-SPORTS) ---
 def obtener_cartelera_global():
+    from datetime import datetime, timedelta
     hoy = datetime.now().strftime('%Y-%m-%d')
+    limite = (datetime.now() + timedelta(days=3)).strftime('%Y-%m-%d')
+    
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_SPORTS_KEY}
     
     try:
-        res = requests.get(url, headers=headers, params={"date": hoy})
+        res = requests.get(url, headers=headers, params={"from": hoy, "to": limite})
         partidos = res.json().get('response', [])
-        if not partidos: return "No hay partidos relevantes hoy."
+        if not partidos: return "No hay partidos relevantes."
         
-        # Diccionario para agrupar las categorías
         clasificacion = {
             "🏆 TOP EUROPA & INTERNACIONAL": [],
             "🌎 SELECCIONES (Amistosos / Copas)": [],
             "⚽ LIGAS DE AMÉRICA": []
         }
 
-        # Palabras clave para el filtrado
         top_leagues = ["Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1", "Champions League", "Europa League", "Copa Libertadores", "Euro Championship"]
         selecciones = ["Friendlies", "World Cup", "Copa America", "UEFA Nations League"]
         latam_leagues = ["Primera A", "Liga Profesional", "Liga MX", "Brasileirao", "Primera Division", "MLS"]
 
         for p in partidos:
+            # 1. Filtro de partido terminado (FT, PEN, AET)
+            estado = p['fixture']['status']['short']
+            if estado in ['FT', 'AET', 'PEN']:
+                continue
+
+            liga = p['league']['name']
             local = p['teams']['home']['name']
             visitante = p['teams']['away']['name']
-            liga = p['league']['name']
             pais = p['league']['country']
             
-            item = f"▫️ {local} vs {visitante} ({liga})"
+            # 2. Filtro de ligas y equipos femeninos
+            if "women" in liga.lower() or "femenina" in liga.lower() or local.endswith(" W") or visitante.endswith(" W"):
+                continue
+            
+            # 3. Extracción de Fecha y Hora
+            fecha_cruda = p['fixture']['date']
+            fecha = fecha_cruda.split('T')[0]
+            hora = fecha_cruda.split('T')[1][:5]
+            
+            item = f"▫️ [{fecha} {hora}] {local} vs {visitante} ({liga})"
 
-            # Lógica de clasificación
             if any(kw.lower() in liga.lower() for kw in top_leagues):
                 clasificacion["🏆 TOP EUROPA & INTERNACIONAL"].append(item)
             elif any(kw.lower() in liga.lower() for kw in selecciones) or pais == "World":
@@ -175,15 +193,13 @@ def obtener_cartelera_global():
             elif any(kw.lower() in liga.lower() for kw in latam_leagues) or pais in ["Colombia", "Argentina", "Brazil", "Mexico", "Chile"]:
                 clasificacion["⚽ LIGAS DE AMÉRICA"].append(item)
 
-        # Construir el mensaje final ensamblando los grupos
         texto_final = ""
         for categoria, lista in clasificacion.items():
             if lista:
-                # Mostramos máximo 10 partidos por categoría para no saturar Telegram
                 texto_final += f"*{categoria}*\n" + "\n".join(lista[:10]) + "\n\n" 
 
         if not texto_final.strip():
-            return "Hoy solo hay partidos de divisiones menores o ligas no clasificadas en nuestro radar."
+            return "No hay partidos pendientes en nuestro radar para los próximos días."
 
         return texto_final.strip()
     except Exception as e:
