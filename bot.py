@@ -31,54 +31,46 @@ def obtener_estadisticas_equipo(nombre_equipo, competicion="PD"):
     headers = {"X-Auth-Token": FOOTBALL_API_KEY}
     
     try:
-        print(f"--> 1. Buscando: {nombre_equipo} en liga {competicion}", flush=True)
         response = requests.get(url, headers=headers)
         
         if response.status_code != 200:
-            print(f"--> ❌ Error API: {response.status_code} - {response.text}", flush=True)
+            print(f"Error API: {response.status_code}", flush=True)
             return None, None
             
         data = response.json()
-        tipos_tabla = [t['type'] for t in data.get('standings', [])]
-        print(f"--> 2. Tablas descargadas: {tipos_tabla}", flush=True)
         
-        tabla_home = next((t for t in data.get('standings', []) if t['type'] == 'HOME'), None)
-        tabla_away = next((t for t in data.get('standings', []) if t['type'] == 'AWAY'), None)
+        # Ahora buscamos la tabla 'TOTAL' que es la que nos entrega la API
+        tabla_total = next((t for t in data.get('standings', []) if t['type'] == 'TOTAL'), None)
         
-        if not tabla_home or not tabla_away:
-            print("--> ❌ Faltan datos de tablas HOME o AWAY en esta liga.", flush=True)
+        if not tabla_total:
             return None, None
 
         stats = {}
         nombre_oficial = nombre_equipo
         
-        for row in tabla_home['table']:
+        # Extraemos los promedios generales
+        for row in tabla_total['table']:
             if nombre_equipo.lower() in row['team']['name'].lower():
                 nombre_oficial = row['team']['name']
                 partidos = row['playedGames'] if row['playedGames'] > 0 else 1
-                stats['gf_home'] = row['goalsFor'] / partidos
-                stats['gc_home'] = row['goalsAgainst'] / partidos
-                print(f"--> 3. Datos Local OK: {stats['gf_home']} GF", flush=True)
-                break
                 
-        for row in tabla_away['table']:
-            if nombre_equipo.lower() in row['team']['name'].lower():
-                partidos = row['playedGames'] if row['playedGames'] > 0 else 1
-                stats['gf_away'] = row['goalsFor'] / partidos
-                stats['gc_away'] = row['goalsAgainst'] / partidos
-                print(f"--> 4. Datos Visitante OK: {stats['gf_away']} GF", flush=True)
+                promedio_gf = row['goalsFor'] / partidos
+                promedio_gc = row['goalsAgainst'] / partidos
+                
+                # Alimentamos el motor con el promedio global para que Poisson funcione
+                stats['gf_home'] = promedio_gf
+                stats['gc_home'] = promedio_gc
+                stats['gf_away'] = promedio_gf
+                stats['gc_away'] = promedio_gc
                 break
-
-        print(f"--> 5. Stats finales listas: {stats}", flush=True)
 
         if len(stats) == 4:
             return stats, nombre_oficial
         
-        print(f"--> ❌ El equipo '{nombre_equipo}' no está escrito igual que en la API.", flush=True)
         return None, None
 
     except Exception as e:
-        print(f"--> ❌ Error fatal de sistema: {e}", flush=True)
+        print(f"Error fatal: {e}", flush=True)
         return None, None
 
 # --- 3. MOTOR ESTADÍSTICO MATEMÁTICO ---
