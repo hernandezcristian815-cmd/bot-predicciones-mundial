@@ -136,25 +136,59 @@ def consultar_gemini(estadisticas, local, visitante):
     except: return "⚠️ Error consultando a la IA."
 
 # --- 5. CARTELERA MUNDIAL (API-SPORTS) ---
+# --- 5. CARTELERA MUNDIAL CLASIFICADA (API-SPORTS) ---
 def obtener_cartelera_global():
     hoy = datetime.now().strftime('%Y-%m-%d')
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_SPORTS_KEY}
+    
     try:
         res = requests.get(url, headers=headers, params={"date": hoy})
         partidos = res.json().get('response', [])
         if not partidos: return "No hay partidos relevantes hoy."
         
-        lista = []
+        # Diccionario para agrupar las categorías
+        clasificacion = {
+            "🏆 TOP EUROPA & INTERNACIONAL": [],
+            "🌎 SELECCIONES (Amistosos / Copas)": [],
+            "⚽ LIGAS DE AMÉRICA": []
+        }
+
+        # Palabras clave para el filtrado
+        top_leagues = ["Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1", "Champions League", "Europa League", "Copa Libertadores", "Euro Championship"]
+        selecciones = ["Friendlies", "World Cup", "Copa America", "UEFA Nations League"]
+        latam_leagues = ["Primera A", "Liga Profesional", "Liga MX", "Brasileirao", "Primera Division", "MLS"]
+
         for p in partidos:
             local = p['teams']['home']['name']
             visitante = p['teams']['away']['name']
             liga = p['league']['name']
-            lista.append(f"⚽ {local} vs {visitante} ({liga})")
-            if len(lista) >= 20: break
-        return "\n".join(lista)
-    except: return None
+            pais = p['league']['country']
+            
+            item = f"▫️ {local} vs {visitante} ({liga})"
 
+            # Lógica de clasificación
+            if any(kw.lower() in liga.lower() for kw in top_leagues):
+                clasificacion["🏆 TOP EUROPA & INTERNACIONAL"].append(item)
+            elif any(kw.lower() in liga.lower() for kw in selecciones) or pais == "World":
+                clasificacion["🌎 SELECCIONES (Amistosos / Copas)"].append(item)
+            elif any(kw.lower() in liga.lower() for kw in latam_leagues) or pais in ["Colombia", "Argentina", "Brazil", "Mexico", "Chile"]:
+                clasificacion["⚽ LIGAS DE AMÉRICA"].append(item)
+
+        # Construir el mensaje final ensamblando los grupos
+        texto_final = ""
+        for categoria, lista in clasificacion.items():
+            if lista:
+                # Mostramos máximo 10 partidos por categoría para no saturar Telegram
+                texto_final += f"*{categoria}*\n" + "\n".join(lista[:10]) + "\n\n" 
+
+        if not texto_final.strip():
+            return "Hoy solo hay partidos de divisiones menores o ligas no clasificadas en nuestro radar."
+
+        return texto_final.strip()
+    except Exception as e:
+        print(f"Error clasificando cartelera: {e}")
+        return None
 # --- 6. HANDLERS DE TELEGRAM ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
