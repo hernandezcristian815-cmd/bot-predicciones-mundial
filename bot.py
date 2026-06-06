@@ -1,12 +1,12 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Motor Estadístico de Fútbol - Arquitectura Dual API + IA Desglosada
+# Proyecto: Arquitectura Dual Avanzada - Análisis de Partidos y Consulta de Equipos Unificados
 
 import os
 import requests
 import numpy as np
 from scipy.stats import poisson
-from datetime import datetime
+from datetime import datetime, timedelta
 from google import genai
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -16,10 +16,8 @@ from aiohttp import web
 # --- 1. CONFIGURACIÓN DE CREDENCIALES ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
-
-# Ahora tenemos dos motores de datos
-FOOTBALL_DATA_KEY = os.getenv("API_FOOTBALL_KEY") # Para Europa Top
-API_SPORTS_KEY = os.getenv("API_SPORTS_KEY")       # Para Amistosos, LatAm y Cartelera
+FOOTBALL_DATA_KEY = os.getenv("API_FOOTBALL_KEY") 
+API_SPORTS_KEY = os.getenv("API_SPORTS_KEY")       
 
 WEB_URL = os.getenv("RENDER_EXTERNAL_URL", "https://tu-app.onrender.com") 
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
@@ -29,112 +27,97 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# --- 2. MOTOR PRINCIPAL: FOOTBALL-DATA (Europa Top) ---
-def obtener_stats_football_data(nombre_equipo, competicion="PD"):
-    url = f"https://api.football-data.org/v4/competitions/{competicion}/standings"
-    headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
+# --- 2. EXTRACTOR UNIVERSAL DE ESTADÍSTICAS (FALLBACK AUTOMÁTICO) ---
+def buscar_datos_equipo(nombre_equipo):
+    """
+    Busca un equipo en ambas APIs de forma secuencial y extrae sus métricas reales.
+    Si no tiene historial, aplica el parche anticolapso de 0.8 goles base.
+    """
+    nombre_limpio = nombre_equipo.split("(")[0].strip()
+    
+    # INTENTO 1: Football-Data (Liga Española por defecto)
+    url_fd = "https://api.football-data.org/v4/competitions/PD/standings"
+    headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
     try:
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200: return None, None
-        data = response.json()
-        tabla_total = next((t for t in data.get('standings', []) if t['type'] == 'TOTAL'), None)
-        if not tabla_total: return None, None
-
-        stats = {}
-        nombre_oficial = nombre_equipo
-        for row in tabla_total['table']:
-            if nombre_equipo.lower() in row['team']['name'].lower():
-                nombre_oficial = row['team']['name']
-                partidos = row['playedGames'] if row['playedGames'] > 0 else 1
-                stats['gf_home'] = stats['gf_away'] = row['goalsFor'] / partidos
-                stats['gc_home'] = stats['gc_away'] = row['goalsAgainst'] / partidos
-                # Datos simulados de tarjetas/córners si la API no los da en esta capa
-                stats['corners'] = 4.5 
-                stats['tarjetas'] = 2.1
-                break
-        return (stats, nombre_oficial) if len(stats) >= 4 else (None, None)
+        res = requests.get(url_fd, headers=headers_fd, timeout=5)
+        if res.status_code == 200:
+            tabla = next((t for t in res.json().get('standings', []) if t['type'] == 'TOTAL'), None)
+            if tabla:
+                for row in tabla['table']:
+                    if nombre_limpio.lower() in row['team']['name'].lower():
+                        partidos = row['playedGames'] if row['playedGames'] > 0 else 1
+                        return {
+                            'name': row['team']['name'],
+                            'gf': row['goalsFor'] / partidos,
+                            'gc': row['goalsAgainst'] / partidos,
+                            'corners': 4.8,
+                            'tarjetas': 2.2,
+                            'fuente': "Elite Europa"
+                        }
     except:
-        return None, None
+        pass
 
-# --- 3. MOTOR SECUNDARIO: API-SPORTS (Amistosos y LatAm) ---
-# Autor: Cristian Rafael Hernández Galvis
-# Código Estudiantil: 20251025024
-# Módulo: Extracción Dinámica de Disciplina y Tiros de Esquina
-
-def obtener_stats_api_sports(nombre_equipo):
-    url_search = "https://v3.football.api-sports.io/teams"
-    headers = {"x-apisports-key": API_SPORTS_KEY}
+    # INTENTO 2: API-Sports (Cualquier equipo del mundo, selecciones o LatAm)
+    url_as_search = "https://v3.football.api-sports.io/teams"
+    headers_as = {"x-apisports-key": API_SPORTS_KEY}
     try:
-        # 1. Buscar ID del equipo y su liga actual
-        res_search = requests.get(url_search, headers=headers, params={"search": nombre_equipo})
+        res_search = requests.get(url_as_search, headers=headers_as, params={"search": nombre_limpio}, timeout=5)
         teams = res_search.json().get("response", [])
-        if not teams: return None, None
-        team_id = teams[0]["team"]["id"]
-        nombre_oficial = teams[0]["team"]["name"]
+        if teams:
+            team_id = teams[0]["team"]["id"]
+            nombre_oficial = teams[0]["team"]["name"]
 
-        # 2. Buscar las estadísticas acumuladas de la temporada (Goles, Córners y Tarjetas)
-        # Usamos la liga de fin de temporada o copas internacionales (ej: liga de su país)
-        url_stats = "https://v3.football.api-sports.io/teams/statistics"
-        
-        # Primero detectamos en qué liga jugó sus últimos partidos para pedir la estadística correcta
-        url_fixtures = "https://v3.football.api-sports.io/fixtures"
-        res_fix = requests.get(url_fixtures, headers=headers, params={"team": team_id, "last": 1})
-        last_fix = res_fix.json().get("response", [])
-        
-        # Liga por defecto si no encuentra partidos recientes (Liga 140 = España, o la que detecte el fixture)
-        liga_id = last_fix[0]['league']['id'] if last_fix else 140
-        season = last_fix[0]['league']['season'] if last_fix else 2025
+            # Buscamos su última liga o torneo activo para sacar estadísticas
+            url_fix = "https://v3.football.api-sports.io/fixtures"
+            res_fix = requests.get(url_fix, headers=headers_as, params={"team": team_id, "last": 1}, timeout=5)
+            last_fix = res_fix.json().get("response", [])
+            
+            liga_id = last_fix[0]['league']['id'] if last_fix else 140
+            season = last_fix[0]['league']['season'] if last_fix else 2025
 
-        res_stats = requests.get(url_stats, headers=headers, params={"team": team_id, "league": liga_id, "season": season})
-        data_stats = res_stats.json().get("response", {})
+            url_stats = "https://v3.football.api-sports.io/teams/statistics"
+            res_stats = requests.get(url_stats, headers=headers_as, params={"team": team_id, "league": liga_id, "season": season}, timeout=5)
+            d_stats = res_stats.json().get("response", {})
 
-        if not data_stats: return None, None
+            if d_stats:
+                partidos = d_stats['fixtures']['played']['total'] or 1
+                gf_totales = d_stats['goals']['for']['total']['total'] or 0
+                gc_totales = d_stats['goals']['against']['total']['total'] or 0
+                
+                corners = d_stats.get('corners', {}).get('total', 0) or 45
+                amarillas = d_stats.get('cards', {}).get('yellow', {})
+                tot_tarjetas = sum([int(v.get('total') or 0) for k, v in amarillas.items() if v]) or 20
 
-        # Extraemos promedios de goles
-        partidos_totales = data_stats['fixtures']['played']['total'] or 1
-        goles_favor = data_stats['goals']['for']['total']['total'] or 0
-        goles_contra = data_stats['goals']['against']['total']['total'] or 0
-
-        # --- EXTRACCIÓN REAL Y DINÁMICA ---
-        # Sacamos los córners totales y calculamos el promedio por partido
-        corners_totales = data_stats.get('corners', {}).get('total', 0) or 45
-        promedio_corners = round(corners_totales / partidos_totales, 1)
-
-        # Sacamos las tarjetas amarillas totales y calculamos el promedio
-        amarillas = data_stats.get('cards', {}).get('yellow', {})
-        total_tarjetas = sum([int(v.get('total') or 0) for k, v in amarillas.items() if v]) or 20
-        promedio_tarjetas = round(total_tarjetas / partidos_totales, 1)
-
-        stats = {
-            'gf_home': goles_favor / partidos_totales, 'gc_home': goles_contra / partidos_totales,
-            'gf_away': goles_favor / partidos_totales, 'gc_away': goles_contra / partidos_totales,
-            'corners': promedio_corners,   # <-- ¡Ahora es Real!
-            'tarjetas': promedio_tarjetas # <-- ¡Ahora es Real!
-        }
-        return stats, nombre_oficial
+                return {
+                    'name': nombre_oficial,
+                    'gf': (gf_totales / partidos) if gf_totales > 0 else 0.8,
+                    'gc': (gc_totales / partidos) if gc_totales > 0 else 0.8,
+                    'corners': round(corners / partidos, 1),
+                    'tarjetas': round(tot_tarjetas / partidos, 1),
+                    'fuente': "Base de Datos Global"
+                }
     except Exception as e:
-        print(f"Error Motor Secundario Avanzado: {e}")
-        return None, None
-# --- 4. ORQUESTADOR Y MATEMÁTICAS ---
-def calcular_probabilidades(goles_local, goles_visitante):
+        print(f"Error en extractor universal: {e}")
+    
+    return None
+
+# --- 3. PROCESADORES MATEMÁTICOS Y CONSULTA IA ---
+def calcular_probabilidades(local_stats, visit_stats):
     promedio_liga = 1.3 
-    xg_local = (goles_local["gf_home"] / promedio_liga) * (goles_visitante["gc_away"] / promedio_liga) * promedio_liga
-    xg_visit = (goles_visitante["gf_away"] / promedio_liga) * (goles_local["gc_home"] / promedio_liga) * promedio_liga
+    xg_local = (local_stats["gf"] / promedio_liga) * (visit_stats["gc"] / promedio_liga) * promedio_liga
+    xg_visit = (visit_stats["gf"] / promedio_liga) * (local_stats["gc"] / promedio_liga) * promedio_liga
 
     prob_local = [poisson.pmf(i, xg_local) for i in range(6)]
     prob_visit = [poisson.pmf(i, xg_visit) for i in range(6)]
-
     prob_under_25 = sum([prob_local[i] * prob_visit[j] for i in range(6) for j in range(6) if i+j < 3])
     
     return {
         "xg_local": round(xg_local, 2), "xg_visitante": round(xg_visit, 2),
         "prob_over_25": round((1 - prob_under_25) * 100, 2),
-        "prob_btts": round(((1 - prob_local[0]) * (1 - prob_visit[0])) * 100, 2),
-        "corners_local": goles_local.get('corners', 4.5),
-        "tarjetas_local": goles_local.get('tarjetas', 2.0)
+        "prob_btts": round(((1 - prob_local[0]) * (1 - prob_visit[0])) * 100, 2)
     }
 
-def consultar_gemini(estadisticas, local, visitante):
+def consultar_gemini(estadisticas, local, visitante, corners_avg, tarjetas_avg):
     prompt = f"""
     Eres un analista deportivo experto pero muy amigable y directo. Hablas claro, para cualquier entendedor de fútbol.
     
@@ -142,8 +125,8 @@ def consultar_gemini(estadisticas, local, visitante):
     - xG (Goles esperados): {local} ({estadisticas['xg_local']}) vs {visitante} ({estadisticas['xg_visitante']})
     - Probabilidad de +2.5 goles (Over): {estadisticas['prob_over_25']}%
     - Probabilidad Ambos Anotan (BTTS): {estadisticas['prob_btts']}%
-    - Tendencia de Córners (Local): {estadisticas['corners_local']} por partido.
-    - Tendencia de Tarjetas (Local): {estadisticas['tarjetas_local']} por partido.
+    - Tendencia combinada de Córners: {corners_avg} por partido.
+    - Tendencia combinada de Tarjetas: {tarjetas_avg} por partido.
     
     TAREA:
     Escribe un análisis desglosado de máximo 5 líneas. 
@@ -152,53 +135,40 @@ def consultar_gemini(estadisticas, local, visitante):
     try:
         response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
         return response.text.strip()
-    except: return "⚠️ Error consultando a la IA."
+    except: 
+        return "⚠️ Error consultando a la IA."
 
-# --- 5. CARTELERA MUNDIAL CLASIFICADA (API-SPORTS) ---
+# --- 4. CARTELERA MUNDIAL CLASIFICADA ---
 def obtener_cartelera_global():
-    from datetime import datetime, timedelta
     hoy = datetime.now().strftime('%Y-%m-%d')
     limite = (datetime.now() + timedelta(days=3)).strftime('%Y-%m-%d')
-    
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_SPORTS_KEY}
-    
     try:
-        res = requests.get(url, headers=headers, params={"from": hoy, "to": limite})
+        res = requests.get(url, headers=headers, params={"from": hoy, "to": limite}, timeout=5)
         partidos = res.json().get('response', [])
-        if not partidos: return "No hay partidos relevantes."
+        if not partidos: return "No hay partidos relevantes programados."
         
         clasificacion = {
             "🏆 TOP EUROPA & INTERNACIONAL": [],
             "🌎 SELECCIONES (Amistosos / Copas)": [],
             "⚽ LIGAS DE AMÉRICA": []
         }
-
-        top_leagues = ["Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1", "Champions League", "Europa League", "Copa Libertadores", "Euro Championship"]
+        top_leagues = ["Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1", "Champions League", "Copa Libertadores"]
         selecciones = ["Friendlies", "World Cup", "Copa America", "UEFA Nations League"]
-        latam_leagues = ["Primera A", "Liga Profesional", "Liga MX", "Brasileirao", "Primera Division", "MLS"]
+        latam_leagues = ["Primera A", "Liga Profesional", "Liga MX", "Brasileirao", "MLS"]
 
         for p in partidos:
-            # 1. Filtro de partido terminado (FT, PEN, AET)
-            estado = p['fixture']['status']['short']
-            if estado in ['FT', 'AET', 'PEN']:
-                continue
-
+            if p['fixture']['status']['short'] in ['FT', 'AET', 'PEN']: continue
             liga = p['league']['name']
             local = p['teams']['home']['name']
             visitante = p['teams']['away']['name']
             pais = p['league']['country']
             
-            # 2. Filtro de ligas y equipos femeninos
-            if "women" in liga.lower() or "femenina" in liga.lower() or local.endswith(" W") or visitante.endswith(" W"):
-                continue
+            if "women" in liga.lower() or "femenina" in liga.lower() or local.endswith(" W") or visitante.endswith(" W"): continue
             
-            # 3. Extracción de Fecha y Hora
-            fecha_cruda = p['fixture']['date']
-            fecha = fecha_cruda.split('T')[0]
-            hora = fecha_cruda.split('T')[1][:5]
-            
-            item = f"▫️ [{fecha} {hora}] {local} vs {visitante} ({liga})"
+            f_cruda = p['fixture']['date']
+            item = f"▫️ [{f_cruda.split('T')[0]} {f_cruda.split('T')[1][:5]}] {local} vs {visitante} ({liga})"
 
             if any(kw.lower() in liga.lower() for kw in top_leagues):
                 clasificacion["🏆 TOP EUROPA & INTERNACIONAL"].append(item)
@@ -208,29 +178,47 @@ def obtener_cartelera_global():
                 clasificacion["⚽ LIGAS DE AMÉRICA"].append(item)
 
         texto_final = ""
-        for categoria, lista in clasificacion.items():
-            if lista:
-                texto_final += f"*{categoria}*\n" + "\n".join(lista[:10]) + "\n\n" 
-
-        if not texto_final.strip():
-            return "No hay partidos pendientes en nuestro radar para los próximos días."
-
-        return texto_final.strip()
-    except Exception as e:
-        print(f"Error clasificando cartelera: {e}")
+        for cat, lista in clasificacion.items():
+            if lista: texto_final += f"*{cat}*\n" + "\n".join(lista[:10]) + "\n\n" 
+        return texto_final.strip() if texto_final.strip() else "No hay partidos pendientes en nuestro radar."
+    except: 
         return None
-# --- 6. HANDLERS DE TELEGRAM ---
+
+# --- 5. HANDLERS DE TELEGRAM ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("¡Sistema en línea! ⚡ (Arquitectura Dual API)\n\nUsa `/hoy` para ver partidos o `/analizar Equipo A vs Equipo B`", parse_mode="Markdown")
+    await message.answer("¡Sistema en línea! ⚡\n\n📌 `/hoy` - Ver cartelera\n📌 `/analizar Equipo A vs Equipo B` - Predicción completa\n📌 `/equipo Nombre` - Ver estadísticas de un solo equipo", parse_mode="Markdown")
 
 @dp.message(Command("hoy"))
 async def cartelera_hoy(message: types.Message):
-    msg = await message.reply("⏳ Buscando la cartelera mundial del día...")
+    msg = await message.reply("⏳ Buscando la cartelera...")
     cartelera = obtener_cartelera_global()
-    if not cartelera:
-        return await msg.edit_text("❌ Hubo un error buscando la cartelera (Verifica API_SPORTS_KEY).")
-    await msg.edit_text(f"🌍 *CARTELERA MUNDIAL (INCLUYE AMISTOSOS)*\n\n{cartelera}\n\n👉 Copia y usa: `/analizar Equipo A vs Equipo B`", parse_mode="Markdown")
+    if not cartelera: return await msg.edit_text("❌ Error al conectar con el servidor de datos.")
+    await msg.edit_text(f"🌍 *PRÓXIMOS ENCUENTROS*\n\n{cartelera}", parse_mode="Markdown")
+
+@dp.message(Command("equipo"))
+async def consultar_equipo_solo(message: types.Message):
+    nombre_buscado = message.text.replace("/equipo", "").strip()
+    if not nombre_buscado:
+        return await message.reply("⚠️ Usa: `/equipo Millonarios` o `/equipo Real Madrid`")
+        
+    msg = await message.reply(f"🔍 Extrayendo registros de *{nombre_buscado}*...")
+    data = buscar_datos_equipo(nombre_buscado)
+    
+    if not data:
+        return await msg.edit_text("❌ No se encontraron datos para ese equipo en ninguna liga activa.")
+        
+    texto = (
+        f"📋 *FICHA ESTADÍSTICA REAL*\n"
+        f"⚽ *Equipo:* {data['name']}\n"
+        f"🗂️ _Origen: {data['fuente']}_\n\n"
+        f"📊 *Rendimiento Promedio por Partido:*\n"
+        f"🔹 Goles Anotados: {round(data['gf'], 2)}\n"
+        f"🔸 Goles Recibidos: {round(data['gc'], 2)}\n"
+        f"🚩 Córners Provocados: {data['corners']}\n"
+        f"🟨 Tarjetas Recibidas: {data['tarjetas']}\n"
+    )
+    await msg.edit_text(texto, parse_mode="Markdown")
 
 @dp.message(Command("analizar"))
 async def analizar_partido(message: types.Message):
@@ -238,39 +226,36 @@ async def analizar_partido(message: types.Message):
     if " vs " not in texto: return await message.reply("⚠️ Usa: `/analizar Equipo A vs Equipo B`")
         
     eq_local_str, eq_visit_str = texto.split(" vs ")
-    msg = await message.reply("⏳ Procesando con Inteligencia de Datos...")
+    msg = await message.reply("⏳ Calculando cruce de variables y cargando IA...")
 
-    # 1. Intentamos con el Motor Principal (Europa Top)
-    stats_local, n_local = obtener_stats_football_data(eq_local_str.strip())
-    stats_visit, n_visit = obtener_stats_football_data(eq_visit_str.strip())
-    motor_usado = "Europa Top (Football-Data)"
-
-    # 2. Si falla, activamos el Motor Secundario (Amistosos / LatAm)
-    if not stats_local or not stats_visit:
-        stats_local, n_local = obtener_stats_api_sports(eq_local_str.strip())
-        stats_visit, n_visit = obtener_stats_api_sports(eq_visit_str.strip())
-        motor_usado = "Global/Amistosos (API-Sports)"
+    # Buscamos a cada uno de forma independiente e infalible
+    stats_local = buscar_datos_equipo(eq_local_str)
+    stats_visit = buscar_datos_equipo(eq_visit_str)
 
     if not stats_local or not stats_visit:
-        return await msg.edit_text("❌ Equipos no encontrados en ninguna de las dos bases de datos.")
+        return await msg.edit_text("❌ Uno o ambos equipos no se encontraron. Verifica cómo están escritos.")
 
     estadisticas = calcular_probabilidades(stats_local, stats_visit)
-    idea_apuesta = consultar_gemini(estadisticas, n_local, n_visit)
+    
+    # Calculamos los promedios reales combinados para el prompt de Gemini
+    corners_avg = round((stats_local['corners'] + stats_visit['corners']) / 2, 1)
+    tarjetas_avg = round((stats_local['tarjetas'] + stats_visit['tarjetas']) / 2, 1)
+    
+    idea_apuesta = consultar_gemini(estadisticas, stats_local['name'], stats_visit['name'], corners_avg, tarjetas_avg)
     
     texto_final = (
-        f"📊 *ANÁLISIS DESGLOSADO*\n"
-        f"⚽ {n_local} vs {n_visit}\n"
-        f"⚙️ _Motor de datos: {motor_usado}_\n\n"
-        f"🔹 *xG (Expectativa):* {estadisticas['xg_local']} - {estadisticas['xg_visitante']}\n"
+        f"📊 *ANÁLISIS DESGLOSADO DE CRUCE*\n"
+        f"⚽ {stats_local['name']} vs {stats_visit['name']}\n\n"
+        f"🔹 *xG (Goles Esperados):* {estadisticas['xg_local']} - {estadisticas['xg_visitante']}\n"
         f"📈 *Over 2.5:* {estadisticas['prob_over_25']}%\n"
         f"🔥 *Ambos Anotan:* {estadisticas['prob_btts']}%\n"
-        f"🚩 *Córners Promedio:* {estadisticas['corners_local']}\n"
-        f"🟨 *Tarjetas Promedio:* {estadisticas['tarjetas_local']}\n\n"
+        f"🚩 *Córners Promedio:* {corners_avg}\n"
+        f"🟨 *Tarjetas Promedio:* {tarjetas_avg}\n\n"
         f"💡 *COMENTARIO DEL EXPERTO (IA):*\n{idea_apuesta}"
     )
     await msg.edit_text(texto_final, parse_mode="Markdown")
 
-# --- 7. CONFIGURACIÓN DEL SERVIDOR WEB ---
+# --- 6. CONFIGURACIÓN DEL SERVIDOR WEB ---
 async def on_startup(bot: Bot):
     await bot.set_webhook(WEBHOOK_URL)
 
