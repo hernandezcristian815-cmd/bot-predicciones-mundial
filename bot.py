@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Motor Estadístico de Fútbol - Arquitectura Webhook
+# Proyecto: Motor Estadístico de Fútbol - Webhook + Football-Data
 
 import os
 import requests
@@ -17,54 +17,67 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 FOOTBALL_API_KEY = os.getenv("API_FOOTBALL_KEY") 
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
 
-# Render inyecta automáticamente RENDER_EXTERNAL_URL en sus Web Services
 WEB_URL = os.getenv("RENDER_EXTERNAL_URL", "https://tu-app.onrender.com") 
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 WEBHOOK_URL = f"{WEB_URL}{WEBHOOK_PATH}"
 
-if not all([TELEGRAM_TOKEN, FOOTBALL_API_KEY, GEMINI_API_KEY]):
-    raise ValueError("Faltan variables de entorno esenciales.")
-
-# --- 2. INICIALIZACIÓN DE SERVICIOS ---
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# --- 3. FUNCIONES DE EXTRACCIÓN Y MATEMÁTICAS ---
-def buscar_equipo(nombre_equipo):
-    url = "https://v3.football.api-sports.io/teams"
-    headers = {"x-apisports-key": FOOTBALL_API_KEY} 
+# --- 2. EXTRACCIÓN DE DATOS EXACTOS (FOOTBALL-DATA.ORG) ---
+def obtener_estadisticas_equipo(nombre_equipo, competicion="PD"):
+    """
+    Descarga la tabla y calcula los promedios exactos.
+    Competiciones comunes: 
+    'PD' (La Liga), 'PL' (Premier League), 'SA' (Serie A), 'BL1' (Bundesliga)
+    """
+    url = f"https://api.football-data.org/v4/competitions/{competicion}/standings"
+    headers = {"X-Auth-Token": FOOTBALL_API_KEY}
     
-    response = requests.get(url, headers=headers, params={"search": nombre_equipo})
-    
-    # --- LÍNEAS DE DIAGNÓSTICO (NUEVAS) ---
-    print(f"🔍 DEBUG BÚSQUEDA: {nombre_equipo}")
-    print(f"📡 STATUS CODE: {response.status_code}")
-    print(f"📦 RESPUESTA CRUDA: {response.text}")
-    # --------------------------------------
-    
-    data = response.json().get("response", [])
-    if data:
-        return data[0]["team"]["id"], data[0]["team"]["name"]
-    return None, None
-def obtener_goles_promedio(equipo_id, liga_id=140, season="2025"):
-    url = "https://v3.football.api-sports.io/teams/statistics"
-    headers = {"x-apisports-key": FOOTBALL_API_KEY}
-    
-    response = requests.get(url, headers=headers, params={"team": equipo_id, "league": liga_id, "season": season})
-    if response.status_code == 200:
-        stats = response.json().get("response", {})
-        try:
-            return {
-                "gf_home": float(stats['goals']['for']['average']['home']),
-                "gc_home": float(stats['goals']['against']['average']['home']),
-                "gf_away": float(stats['goals']['for']['average']['away']),
-                "gc_away": float(stats['goals']['against']['average']['away'])
-            }
-        except:
-            return None
-    return None
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            print(f"Error API: {response.status_code} - {response.text}")
+            return None, None
+            
+        data = response.json()
+        
+        # Extraemos las tablas específicas de Local y Visitante
+        tabla_home = next((t for t in data['standings'] if t['type'] == 'HOME'), None)
+        tabla_away = next((t for t in data['standings'] if t['type'] == 'AWAY'), None)
+        
+        if not tabla_home or not tabla_away:
+            return None, None
 
+        stats = {}
+        nombre_oficial = nombre_equipo
+        
+        # Buscar rendimiento como Local
+        for row in tabla_home['table']:
+            if nombre_equipo.lower() in row['team']['name'].lower():
+                nombre_oficial = row['team']['name']
+                partidos = row['playedGames'] if row['playedGames'] > 0 else 1
+                stats['gf_home'] = row['goalsFor'] / partidos
+                stats['gc_home'] = row['goalsAgainst'] / partidos
+                break
+                
+        # Buscar rendimiento como Visitante
+        for row in tabla_away['table']:
+            if nombre_equipo.lower() in row['team']['name'].lower():
+                partidos = row['playedGames'] if row['playedGames'] > 0 else 1
+                stats['gf_away'] = row['goalsFor'] / partidos
+                stats['gc_away'] = row['goalsAgainst'] / partidos
+                break
+
+        if len(stats) == 4:
+            return stats, nombre_oficial
+        return None, None
+    except Exception as e:
+        print(f"Error procesando datos: {e}")
+        return None, None
+
+# --- 3. MOTOR ESTADÍSTICO MATEMÁTICO ---
 def calcular_probabilidades(goles_local, goles_visitante):
     promedio_liga = 1.3 
     xg_local = (goles_local["gf_home"] / promedio_liga) * (goles_visitante["gc_away"] / promedio_liga) * promedio_liga
@@ -101,7 +114,7 @@ def consultar_gemini(estadisticas, local, visitante):
 # --- 4. HANDLERS DE TELEGRAM ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("¡Sistema en línea! ⚡ (Arquitectura Webhook)\n\nUsa: `/analizar Equipo A vs Equipo B`", parse_mode="Markdown")
+    await message.answer("¡Sistema en línea! ⚡ (Arquitectura Webhook + Football-Data)\n\nUsa: `/analizar Equipo A vs Equipo B`", parse_mode="Markdown")
 
 @dp.message(Command("analizar"))
 async def analizar_partido(message: types.Message):
@@ -113,15 +126,12 @@ async def analizar_partido(message: types.Message):
     eq_local_str, eq_visit_str = texto.split(" vs ")
     msg = await message.reply("⏳ Procesando datos en tiempo real...")
 
-    id_local, nombre_local = buscar_equipo(eq_local_str.strip())
-    id_visit, nombre_visit = buscar_equipo(eq_visit_str.strip())
+    stats_local, nombre_local = obtener_estadisticas_equipo(eq_local_str.strip())
+    stats_visit, nombre_visit = obtener_estadisticas_equipo(eq_visit_str.strip())
 
-    if not id_local or not id_visit:
-        return await msg.edit_text("❌ Equipos no encontrados en la API.")
-
-    stats_local, stats_visit = obtener_goles_promedio(id_local), obtener_goles_promedio(id_visit)
     if not stats_local or not stats_visit:
-         return await msg.edit_text("❌ Sin datos de goles esta temporada.")
+        await msg.edit_text("❌ Equipos no encontrados o liga no soportada. (Verifica los nombres).")
+        return
 
     estadisticas = calcular_probabilidades(stats_local, stats_visit)
     idea_apuesta = consultar_gemini(estadisticas, nombre_local, nombre_visit)
@@ -138,7 +148,6 @@ async def analizar_partido(message: types.Message):
 
 # --- 5. CONFIGURACIÓN DEL SERVIDOR WEB ---
 async def on_startup(bot: Bot):
-    # Le decimos a Telegram a qué URL enviar los mensajes
     await bot.set_webhook(WEBHOOK_URL)
     print(f"Webhook configurado en: {WEBHOOK_URL}")
 
@@ -149,7 +158,6 @@ def main():
     webhook_requests_handler.register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)
     
-    # Render usa la variable de entorno PORT automáticamente
     port = int(os.environ.get("PORT", 10000))
     web.run_app(app, host="0.0.0.0", port=port)
 
