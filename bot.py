@@ -33,15 +33,20 @@ dp = Dispatcher()
 # --- 3. FUNCIONES DE EXTRACCIÓN Y MATEMÁTICAS ---
 def buscar_equipo(nombre_equipo):
     url = "https://v3.football.api-sports.io/teams"
-    # Cambiamos a la cabecera oficial directa de API-Sports
     headers = {"x-apisports-key": FOOTBALL_API_KEY} 
     
     response = requests.get(url, headers=headers, params={"search": nombre_equipo})
+    
+    # --- LÍNEAS DE DIAGNÓSTICO (NUEVAS) ---
+    print(f"🔍 DEBUG BÚSQUEDA: {nombre_equipo}")
+    print(f"📡 STATUS CODE: {response.status_code}")
+    print(f"📦 RESPUESTA CRUDA: {response.text}")
+    # --------------------------------------
+    
     data = response.json().get("response", [])
     if data:
         return data[0]["team"]["id"], data[0]["team"]["name"]
     return None, None
-
 def obtener_goles_promedio(equipo_id, liga_id=140, season="2025"):
     url = "https://v3.football.api-sports.io/teams/statistics"
     headers = {"x-apisports-key": FOOTBALL_API_KEY}
