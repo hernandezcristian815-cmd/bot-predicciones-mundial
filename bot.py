@@ -33,7 +33,9 @@ dp = Dispatcher()
 # --- 3. FUNCIONES DE EXTRACCIÓN Y MATEMÁTICAS ---
 def buscar_equipo(nombre_equipo):
     url = "https://v3.football.api-sports.io/teams"
-    headers = {"x-rapidapi-key": FOOTBALL_API_KEY, "x-rapidapi-host": "v3.football.api-sports.io"}
+    # Cambiamos a la cabecera oficial directa de API-Sports
+    headers = {"x-apisports-key": FOOTBALL_API_KEY} 
+    
     response = requests.get(url, headers=headers, params={"search": nombre_equipo})
     data = response.json().get("response", [])
     if data:
@@ -42,7 +44,8 @@ def buscar_equipo(nombre_equipo):
 
 def obtener_goles_promedio(equipo_id, liga_id=140, season="2025"):
     url = "https://v3.football.api-sports.io/teams/statistics"
-    headers = {"x-rapidapi-key": FOOTBALL_API_KEY, "x-rapidapi-host": "v3.football.api-sports.io"}
+    headers = {"x-apisports-key": FOOTBALL_API_KEY}
+    
     response = requests.get(url, headers=headers, params={"team": equipo_id, "league": liga_id, "season": season})
     if response.status_code == 200:
         stats = response.json().get("response", {})
