@@ -75,9 +75,14 @@ def obtener_estadisticas_equipo(nombre_equipo, competicion="PD"):
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
 
-def obtener_partidos_hoy():
-    """Consulta la API para obtener la cartelera del día en curso."""
-    url = "https://api.football-data.org/v4/matches"
+def obtener_partidos_cartelera():
+    """Consulta la API para obtener la cartelera desde hoy hasta 3 días adelante."""
+    # Calculamos las fechas dinámicamente
+    hoy = datetime.now().strftime('%Y-%m-%d')
+    limite = (datetime.now() + timedelta(days=3)).strftime('%Y-%m-%d')
+    
+    # Inyectamos el rango de fechas en la URL
+    url = f"https://api.football-data.org/v4/matches?dateFrom={hoy}&dateTo={limite}"
     headers = {"X-Auth-Token": FOOTBALL_API_KEY}
     
     try:
@@ -90,18 +95,23 @@ def obtener_partidos_hoy():
         partidos = data.get('matches', [])
         
         if not partidos:
-            return "No hay partidos programados para hoy en las ligas de nuestra base de datos."
+            return "No hay partidos programados en los próximos 3 días para las ligas gratuitas (Europa Top 5)."
             
         lista_partidos = []
         for p in partidos:
-            # Extraemos los nombres y la competición
+            # Extraemos fechas, nombres y competición
+            fecha_cruda = p['utcDate']
+            # Formateamos la fecha a algo legible (ej: 2026-06-11)
+            fecha_legible = fecha_cruda.split('T')[0] 
+            
             local = p['homeTeam']['shortName'] or p['homeTeam']['name']
             visitante = p['awayTeam']['shortName'] or p['awayTeam']['name']
             competicion = p['competition']['name']
-            lista_partidos.append(f"⚽ {local} vs {visitante} ({competicion})")
             
-        # Limitamos a los primeros 20 para no hacer spam en Telegram
-        return "\n".join(lista_partidos[:20])
+            lista_partidos.append(f"📅 {fecha_legible} | ⚽ {local} vs {visitante} ({competicion})")
+            
+        # Limitamos a los primeros 25
+        return "\n".join(lista_partidos[:25])
         
     except Exception as e:
         print(f"Error fatal extrayendo cartelera: {e}", flush=True)
@@ -174,19 +184,20 @@ async def analizar_partido(message: types.Message):
         f"💡 *CONCLUSIÓN IA:*\n{idea_apuesta}"
     )
     await msg.edit_text(texto_final, parse_mode="Markdown")
+
 @dp.message(Command("hoy"))
 async def cartelera_hoy(message: types.Message):
-    """Manejador del comando /hoy para mostrar los partidos disponibles."""
-    msg = await message.reply("⏳ Buscando la cartelera de hoy...")
+    """Manejador del comando /hoy para mostrar los próximos partidos."""
+    msg = await message.reply("⏳ Buscando la cartelera de los próximos días...")
     
-    cartelera = obtener_partidos_hoy()
+    cartelera = obtener_partidos_cartelera()
     
     if not cartelera:
-        await msg.edit_text("❌ Hubo un error de conexión al buscar los partidos de hoy.")
+        await msg.edit_text("❌ Hubo un error de conexión al buscar los partidos.")
         return
         
     texto_final = (
-        "📅 *CARTELERA DE HOY*\n\n"
+        "🗓️ *PRÓXIMOS PARTIDOS DISPONIBLES*\n\n"
         f"{cartelera}\n\n"
         "👉 Copia el cruce que te interese y usa:\n"
         "`/analizar Equipo A vs Equipo B`"
