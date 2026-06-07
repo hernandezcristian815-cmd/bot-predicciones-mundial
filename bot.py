@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium v16.1.0-GROQ (Falla Cero por Inferencia Ultra-Rápida)
+# Proyecto: Value Betting Engine Premium v16.1.1-GROQ (Build Corrected & Stable)
 
 import os
 import json
@@ -10,7 +10,6 @@ import asyncio
 import aiohttp
 from datetime import datetime
 from google import genai
-from google.genai import types as genai_types
 from scipy.stats import poisson
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -19,7 +18,7 @@ from aiohttp import web
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- 1. CONFIGURACIÓN, CREDENCIALES Y CONSTANTES ---
-VERSION_ACTUAL = "v16.1.0-GROQ" 
+VERSION_ACTUAL = "v16.1.1-GROQ" 
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
@@ -177,12 +176,14 @@ async def consultar_ia_respaldo(prompt):
     except Exception as e:
         return f"❌ Error en la llamada HTTP asíncrona hacia el cluster de Groq: {e}"
 
-# --- 6. NÚCLEO ARQUITECTÓNICO HÍBRIDO (FILTRO DE EXCEPCIONES 429) ---
+# --- 6. NÚCLEO ARQUITECTÓNICO HÍBRIDO (CORRECCIÓN GOOGLE-GENAI SDK) ---
 async def ejecutar_sistema_cognitivo(prompt, es_json=False):
     """Conmutador inteligente: Envía el prompt a Gemini; ante un RESOURCE_EXHAUSTED redirige a Groq"""
     try:
         loop = asyncio.get_event_loop()
-        config_args = genai_types.GenerateContentConfig(response_mime_type="application/json") if es_json else None
+        
+        # FIX: Mapeo nativo por diccionario para evitar el AttributeError de GenerateContentConfig
+        config_dict = {"response_mime_type": "application/json"} if es_json else None
         
         # Intento con el motor primario (Gemini)
         response = await loop.run_in_executor(
@@ -190,20 +191,20 @@ async def ejecutar_sistema_cognitivo(prompt, es_json=False):
             lambda: client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=prompt,
-                config=config_args
+                config=config_dict
             )
         )
         return response.text.strip(), "Métricas Crudas (Gemini)" if es_json else "Gemini-2.5"
     except Exception as e:
         error_str = str(e)
-        # Interceptamos saturación de cuota de Gemini (429)
+        # Interceptamos saturación de cuota de Gemini (429 / RESOURCE_EXHAUSTED)
         if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
             if es_json:
                 prompt += " Responde estrictamente un JSON plano, sin sintaxis ni marcas de bloques markdown."
             resultado_groq = await consultar_ia_respaldo(prompt)
             return resultado_groq, "Métricas Crudas (Groq)" if es_json else "Groq LPU"
         else:
-            # Re-lanzamos cualquier otro error ajeno a cuotas (ej. sintaxis o llaves incorrectas)
+            # Re-lanzamos cualquier otro error ajeno a cuotas
             raise e
 
 # --- 7. EXTRACCIÓN COGNITIVA DE MÉTRICAS COMPLEMENTARIAS ---
@@ -216,7 +217,6 @@ async def obtener_datos_crudos_ia(nombre_equipo):
     """
     try:
         raw_text, fuente = await ejecutar_sistema_cognitivo(prompt, es_json=True)
-        # Limpieza ante posibles fugas de markdown en entornos fallback
         raw_text = re.sub(r'^```json\s*', '', raw_text)
         raw_text = re.sub(r'\s*```$', '', raw_text)
         
@@ -339,7 +339,7 @@ async def manejador_botones_interactivos(callback_query: types.CallbackQuery):
     await callback_query.answer()
     
     if callback_query.data == "info_version":
-        await callback_query.message.answer(f"ℹ️ *Información del Sistema:*\nEstás corriendo el entorno de análisis unificado versión `{VERSION_ACTUAL}` con bypass automático hacia Groq LPU.", parse_mode="Markdown")
+        await callback_query.message.answer(f"ℹ️ *Información del Sistema:*\nEstás corriendo el entorno de análisis unificado versión `{VERSION_ACTUAL}` con bypass automático hacia Groq LPU de baja latencia.", parse_mode="Markdown")
         
     elif callback_query.data == "ver_partidos_hoy":
         msg_inicial = await callback_query.message.answer("⏳ Solicitando partidos del día a los servidores...")
@@ -383,4 +383,6 @@ async def analizar_partido(message: types.Message):
         return await message.reply("⚠️ Formato inválido. Usa:\n`/analizar Equipo Local vs Equipo Visitante`", reply_markup=obtener_teclado_interactivo())
     
     eq_local, eq_visit = argumentos.split(" vs ")
-    msg = await message.reply("⏳ *[░░░░░░░░░░] 0%* Abriendo pasarelas asíncronas..
+    msg = await message.reply("⏳ *[░░░░░░░░░░] 0%* Abriendo pasarelas asíncronas...")
+
+    await msg.edit_text(f"⏳ *[███░░░░░░░] 30%
