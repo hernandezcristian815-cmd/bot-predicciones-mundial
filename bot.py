@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium v16 - Arquitectura Dual (Gemini + Fallback DeepSeek/OpenAI)
+# Proyecto: Value Betting Engine Premium v16.1.0-GROQ (Falla Cero por Inferencia Ultra-Rápida)
 
 import os
 import json
@@ -19,16 +19,17 @@ from aiohttp import web
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- 1. CONFIGURACIÓN, CREDENCIALES Y CONSTANTES ---
-VERSION_ACTUAL = "v16.0.0-DUAL" 
+VERSION_ACTUAL = "v16.1.0-GROQ" 
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
 FOOTBALL_DATA_KEY = os.getenv("API_FOOTBALL_KEY") 
 API_SPORTS_KEY = os.getenv("API_SPORTS_KEY")       
 
-# Variables para la IA de Apoyo (Ejemplo con DeepSeek o OpenAI)
-RESPALDO_API_KEY = os.getenv("RESPALDO_API_KEY") # Tu clave secundaria
-RESPALDO_API_URL = os.getenv("RESPALDO_API_URL", "https://api.deepseek.com/v1/chat/completions") # O la de OpenAI
+# Variables de la pasarela de respaldo (Groq LPU)
+RESPALDO_API_KEY = os.getenv("RESPALDO_API_KEY") 
+RESPALDO_API_URL = os.getenv("RESPALDO_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+MODELO_GROQ = "llama3-70b-8192"  # Modelo óptimo de Groq para análisis táctico estructurado
 
 WEB_URL = os.getenv("RENDER_EXTERNAL_URL", "https://tu-app.onrender.com") 
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
@@ -136,41 +137,54 @@ async def consultar_partidos_del_dia():
             
     return partidos_detectados
 
-# --- 5. PASARELA AUXILIAR (LLAMADA A IA DE RESPALDO VÍA HTTP ASÍNCRODO) ---
+# --- 5. PASARELA DE RESPALDO: INFERENCIA DE ALTA VELOCIDAD CON GROQ ---
 async def consultar_ia_respaldo(prompt):
-    """Si Gemini falla o agota cuota, esta función entra al rescate usando otra API"""
+    """Mecanismo Fallback: Si Gemini agota cuota, Groq rescata el flujo a velocidad LPU"""
     if not RESPALDO_API_KEY:
-        return "⚠️ Error: Gemini agotó cuotas y no hay una API Key de respaldo configurada."
+        return "⚠️ Error de Cuota: Gemini se saturó y no se detectó la clave de Groq en Render."
         
     headers = {
         "Authorization": f"Bearer {RESPALDO_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "deepseek-chat", # Puede cambiarse por gpt-4o-mini, etc.
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3
+        "model": MODELO_GROQ,
+        "messages": [
+            {
+                "role": "system", 
+                "content": "Eres un Tipster Analítico de Fútbol Profesional. Analizas datos matemáticos con precisión y presentas tus análisis e informes técnicos usando formato Markdown limpio."
+            },
+            {
+                "role": "user", 
+                "content": prompt
+            }
+        ],
+        "temperature": 0.25,
+        "max_tokens": 1200
     }
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(RESPALDO_API_URL, headers=headers, json=payload, timeout=15.0) as response:
+            async with session.post(RESPALDO_API_URL, headers=headers, json=payload, timeout=10.0) as response:
                 if response.status == 200:
                     res_data = await response.json()
-                    return res_data['choices'][0]['message']['content'].strip() + "\n\n🌐 _(Informe generado por IA de Respaldo)_"
+                    return res_data['choices'][0]['message']['content'].strip() + "\n\n⚡ _(Informe de emergencia procesado por Groq LPU)_"
+                elif response.status == 429:
+                    return "❌ Error Crítico: Se agotaron los límites por minuto tanto de Gemini como de Groq."
                 else:
-                    return f"❌ Fallaron ambas IAs. Respaldo HTTP Status: {response.status}"
+                    detalles = await response.text()
+                    return f"❌ Falló pasarela Groq. Estado HTTP: {response.status}. Detalle: {detalles}"
     except Exception as e:
-        return f"❌ Falló el sistema analítico principal y el de respaldo: {e}"
+        return f"❌ Error en la llamada HTTP asíncrona hacia el cluster de Groq: {e}"
 
-# --- 6. NÚCLEO ARQUITECTÓNICO DUAL (SISTEMA DE FALLBACK AUTOMÁTICO) ---
+# --- 6. NÚCLEO ARQUITECTÓNICO HÍBRIDO (FILTRO DE EXCEPCIONES 429) ---
 async def ejecutar_sistema_cognitivo(prompt, es_json=False):
-    """Estrategia de ingeniería: Intenta Gemini, si da error de cuota, usa la IA secundaria"""
+    """Conmutador inteligente: Envía el prompt a Gemini; ante un RESOURCE_EXHAUSTED redirige a Groq"""
     try:
         loop = asyncio.get_event_loop()
         config_args = genai_types.GenerateContentConfig(response_mime_type="application/json") if es_json else None
         
-        # Intento con el motor principal (Gemini)
+        # Intento con el motor primario (Gemini)
         response = await loop.run_in_executor(
             None, 
             lambda: client.models.generate_content(
@@ -182,18 +196,17 @@ async def ejecutar_sistema_cognitivo(prompt, es_json=False):
         return response.text.strip(), "Métricas Crudas (Gemini)" if es_json else "Gemini-2.5"
     except Exception as e:
         error_str = str(e)
-        # Si detectamos saturación o cuota agotada (429), activamos la IA de apoyo instantáneamente
+        # Interceptamos saturación de cuota de Gemini (429)
         if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-            # Si requería JSON, adaptamos el prompt para el respaldo
             if es_json:
-                prompt += " Asegúrate de responder ÚNICAMENTE con el objeto JSON estructurado, sin markdown."
-            resultado_respaldo = await consultar_ia_respaldo(prompt)
-            return resultado_respaldo, "Métricas Crudas (Respaldo)" if es_json else "IA Respaldo"
+                prompt += " Responde estrictamente un JSON plano, sin sintaxis ni marcas de bloques markdown."
+            resultado_groq = await consultar_ia_respaldo(prompt)
+            return resultado_groq, "Métricas Crudas (Groq)" if es_json else "Groq LPU"
         else:
-            # Si es otro tipo de error crítico de sintaxis, lo lanzamos
+            # Re-lanzamos cualquier otro error ajeno a cuotas (ej. sintaxis o llaves incorrectas)
             raise e
 
-# --- 7. EXTRACCIÓN DE DATOS NUMÉRICOS CRUDOS VÍA COGNICIÓN ---
+# --- 7. EXTRACCIÓN COGNITIVA DE MÉTRICAS COMPLEMENTARIAS ---
 async def obtener_datos_crudos_ia(nombre_equipo):
     prompt = f"""
     Proporciona los datos estadísticos crudos y promedios por partido del equipo o selección de fútbol: "{nombre_equipo}" en sus últimos 10 juegos oficiales.
@@ -203,6 +216,7 @@ async def obtener_datos_crudos_ia(nombre_equipo):
     """
     try:
         raw_text, fuente = await ejecutar_sistema_cognitivo(prompt, es_json=True)
+        # Limpieza ante posibles fugas de markdown en entornos fallback
         raw_text = re.sub(r'^```json\s*', '', raw_text)
         raw_text = re.sub(r'\s*```$', '', raw_text)
         
@@ -263,7 +277,7 @@ async def buscar_datos_equipo(nombre_equipo):
 
     return await obtener_datos_crudos_ia(nombre_limpio)
 
-# --- 8. PYTHON PROCESA LAS MATEMÁTICAS ---
+# --- 8. PROCESAMIENTO MATEMÁTICO PURO (DISTRIBUCIÓN DE POISSON) ---
 def calcular_probabilidades(local_stats, visit_stats):
     promedio_goles = 1.25
     
@@ -285,10 +299,10 @@ def calcular_probabilidades(local_stats, visit_stats):
         "cuota_over_minima": round(100 / (p_over if p_over > 0 else 1) * 1.05, 2), "cuota_btts_minima": round(100 / (p_btts if p_btts > 0 else 1) * 1.05, 2)
     }
 
-# --- 9. CONFIGURACIÓN DEL PROMPT DE SCOUTING ---
+# --- 9. CONFIGURACIÓN DEL PROMPT ANALÍTICO ---
 async def generar_informe_scouting_ia(estadisticas, local_stats, visit_stats, corners, tarjetas):
     prompt = f"""
-    Actúa como un Tipster Analítico de Fútbol Profesional. Analiza el cruce: {local_stats['name']} vs {visit_stats['name']}.
+    Actúa como un Tipster Analítico de Fútbol Profesional. Analiza el cruce de alta competencia: {local_stats['name']} vs {visit_stats['name']}.
     
     MÉTRICAS MATEMÁTICAS PROCESADAS POR EL SISTEMA (PYTHON):
     - Goles Esperados (xG): {local_stats['name']} {estadisticas['xg_local']} vs {estadisticas['xg_visitante']} {visit_stats['name']}
@@ -310,7 +324,7 @@ async def generar_informe_scouting_ia(estadisticas, local_stats, visit_stats, co
 async def cmd_start(message: types.Message):
     texto_bienvenida = (
         f"🤖 *Value Betting Engine Premium Active*\n"
-        f"⚙️ *Versión en pruebas:* `{VERSION_ACTUAL}`\n\n"
+        f"⚙️ *Versión en producción:* `{VERSION_ACTUAL}`\n\n"
         f"Selecciona una de las funciones analíticas del menú estructurado:"
     )
     await message.answer(texto_bienvenida, reply_markup=obtener_teclado_interactivo(), parse_mode="Markdown")
@@ -325,7 +339,7 @@ async def manejador_botones_interactivos(callback_query: types.CallbackQuery):
     await callback_query.answer()
     
     if callback_query.data == "info_version":
-        await callback_query.message.answer(f"ℹ️ *Información del Sistema:*\nEstás corriendo el entorno de pruebas analíticas unificado versión `{VERSION_ACTUAL}` con tolerancia asíncrona a fallos de cuota.", parse_mode="Markdown")
+        await callback_query.message.answer(f"ℹ️ *Información del Sistema:*\nEstás corriendo el entorno de análisis unificado versión `{VERSION_ACTUAL}` con bypass automático hacia Groq LPU.", parse_mode="Markdown")
         
     elif callback_query.data == "ver_partidos_hoy":
         msg_inicial = await callback_query.message.answer("⏳ Solicitando partidos del día a los servidores...")
@@ -369,16 +383,4 @@ async def analizar_partido(message: types.Message):
         return await message.reply("⚠️ Formato inválido. Usa:\n`/analizar Equipo Local vs Equipo Visitante`", reply_markup=obtener_teclado_interactivo())
     
     eq_local, eq_visit = argumentos.split(" vs ")
-    msg = await message.reply("⏳ *[░░░░░░░░░░] 0%* Abriendo pasarelas asíncronas...")
-
-    await msg.edit_text(f"⏳ *[███░░░░░░░] 30%* Extrayendo datos crudos de: {eq_local}")
-    stats_local = await buscar_datos_equipo(eq_local)
-    
-    await msg.edit_text(f"⏳ *[██████░░░░] 60%* Extrayendo datos crudos de: {eq_visit}")
-    stats_visit = await buscar_datos_equipo(eq_visit)
-
-    await msg.edit_text(f"⏳ *[█████████░] 90%* Python ejecutando Poisson y delegando al Sistema Analítico DUAL...")
-    
-    # Python procesa estrictamente el algoritmo matemático
-    estadisticas = calcular_probabilidades(stats_local, stats_visit)
-    corners_avg = round((stats_local['corners'] + stats
+    msg = await message.reply("⏳ *[░░░░░░░░░░] 0%* Abriendo pasarelas asíncronas..
