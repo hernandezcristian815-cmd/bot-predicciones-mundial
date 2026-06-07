@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium v14 - Menú con Control de Versión Dinámico
+# Proyecto: Value Betting Engine Premium v16 - Arquitectura Dual (Gemini + Fallback DeepSeek/OpenAI)
 
 import os
 import json
@@ -19,12 +19,16 @@ from aiohttp import web
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- 1. CONFIGURACIÓN, CREDENCIALES Y CONSTANTES ---
-VERSION_ACTUAL = "v14.0.0-PRO"  # <--- Control de versión visible para el usuario
+VERSION_ACTUAL = "v16.0.0-DUAL" 
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
 FOOTBALL_DATA_KEY = os.getenv("API_FOOTBALL_KEY") 
 API_SPORTS_KEY = os.getenv("API_SPORTS_KEY")       
+
+# Variables para la IA de Apoyo (Ejemplo con DeepSeek o OpenAI)
+RESPALDO_API_KEY = os.getenv("RESPALDO_API_KEY") # Tu clave secundaria
+RESPALDO_API_URL = os.getenv("RESPALDO_API_URL", "https://api.deepseek.com/v1/chat/completions") # O la de OpenAI
 
 WEB_URL = os.getenv("RENDER_EXTERNAL_URL", "https://tu-app.onrender.com") 
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
@@ -37,7 +41,7 @@ dp = Dispatcher()
 DB_NAME = "apuestas.db"
 LIGAS_MAPA = {"WC", "CL", "PL", "ELC", "FL1", "BL1", "SA", "PD", "PPL", "DED", "BSA"}
 
-# --- 2. GENERADOR DE TECLADO INTERACTIVO (CON INDICADOR DE VERSIÓN) ---
+# --- 2. GENERADOR DE TECLADO INTERACTIVO ---
 def obtener_teclado_interactivo():
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -48,7 +52,6 @@ def obtener_teclado_interactivo():
         types.InlineKeyboardButton(text="🔍 Buscar Equipo", switch_inline_query_current_chat="/equipo "),
         types.InlineKeyboardButton(text="📈 Ver Efectividad", callback_data="ver_efectividad_ia")
     )
-    # Botón informativo inferior que bloquea visualmente la versión instalada en el sistema
     builder.row(
         types.InlineKeyboardButton(text=f"⚙️ Engine Núcleo: {VERSION_ACTUAL}", callback_data="info_version")
     )
@@ -87,7 +90,7 @@ def registrar_resultado_db(prediccion_id, goles_l, goles_v):
     conn.close()
     return filas_afectadas > 0
 
-# --- 4. CONSULTA REAL DE AGENDA ASÍNCROMA ---
+# --- 4. CONSULTA ASÍNCROMA DE AGENDAS ---
 async def consultar_partidos_del_dia():
     url_matches = "https://api.football-data.org/v4/matches"
     headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
@@ -133,7 +136,64 @@ async def consultar_partidos_del_dia():
             
     return partidos_detectados
 
-# --- 5. EXTRACCIÓN EXCLUSIVA DE DATOS NUMÉRICOS CRUDOS VÍA IA ---
+# --- 5. PASARELA AUXILIAR (LLAMADA A IA DE RESPALDO VÍA HTTP ASÍNCRODO) ---
+async def consultar_ia_respaldo(prompt):
+    """Si Gemini falla o agota cuota, esta función entra al rescate usando otra API"""
+    if not RESPALDO_API_KEY:
+        return "⚠️ Error: Gemini agotó cuotas y no hay una API Key de respaldo configurada."
+        
+    headers = {
+        "Authorization": f"Bearer {RESPALDO_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "deepseek-chat", # Puede cambiarse por gpt-4o-mini, etc.
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(RESPALDO_API_URL, headers=headers, json=payload, timeout=15.0) as response:
+                if response.status == 200:
+                    res_data = await response.json()
+                    return res_data['choices'][0]['message']['content'].strip() + "\n\n🌐 _(Informe generado por IA de Respaldo)_"
+                else:
+                    return f"❌ Fallaron ambas IAs. Respaldo HTTP Status: {response.status}"
+    except Exception as e:
+        return f"❌ Falló el sistema analítico principal y el de respaldo: {e}"
+
+# --- 6. NÚCLEO ARQUITECTÓNICO DUAL (SISTEMA DE FALLBACK AUTOMÁTICO) ---
+async def ejecutar_sistema_cognitivo(prompt, es_json=False):
+    """Estrategia de ingeniería: Intenta Gemini, si da error de cuota, usa la IA secundaria"""
+    try:
+        loop = asyncio.get_event_loop()
+        config_args = genai_types.GenerateContentConfig(response_mime_type="application/json") if es_json else None
+        
+        # Intento con el motor principal (Gemini)
+        response = await loop.run_in_executor(
+            None, 
+            lambda: client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=config_args
+            )
+        )
+        return response.text.strip(), "Métricas Crudas (Gemini)" if es_json else "Gemini-2.5"
+    except Exception as e:
+        error_str = str(e)
+        # Si detectamos saturación o cuota agotada (429), activamos la IA de apoyo instantáneamente
+        if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
+            # Si requería JSON, adaptamos el prompt para el respaldo
+            if es_json:
+                prompt += " Asegúrate de responder ÚNICAMENTE con el objeto JSON estructurado, sin markdown."
+            resultado_respaldo = await consultar_ia_respaldo(prompt)
+            return resultado_respaldo, "Métricas Crudas (Respaldo)" if es_json else "IA Respaldo"
+        else:
+            # Si es otro tipo de error crítico de sintaxis, lo lanzamos
+            raise e
+
+# --- 7. EXTRACCIÓN DE DATOS NUMÉRICOS CRUDOS VÍA COGNICIÓN ---
 async def obtener_datos_crudos_ia(nombre_equipo):
     prompt = f"""
     Proporciona los datos estadísticos crudos y promedios por partido del equipo o selección de fútbol: "{nombre_equipo}" en sus últimos 10 juegos oficiales.
@@ -142,21 +202,12 @@ async def obtener_datos_crudos_ia(nombre_equipo):
     No incluyas marcas markdown de código (como ```json), solo el JSON limpio.
     """
     try:
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None, 
-            lambda: client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(response_mime_type="application/json")
-            )
-        )
-        raw_text = response.text.strip()
+        raw_text, fuente = await ejecutar_sistema_cognitivo(prompt, es_json=True)
         raw_text = re.sub(r'^```json\s*', '', raw_text)
         raw_text = re.sub(r'\s*```$', '', raw_text)
         
         data = json.loads(raw_text)
-        data['fuente'] = "Métricas Crudas (IA)"
+        data['fuente'] = fuente
         return data
     except:
         return {"name": nombre_equipo, "gf": 1.30, "gc": 1.20, "corners": 4.5, "tarjetas": 2.0, "forma": "E-E-V-D-E", "fuente": "Resguardo Numérico"}
@@ -165,7 +216,6 @@ async def buscar_datos_equipo(nombre_equipo):
     nombre_limpio = nombre_equipo.strip()
     
     async with aiohttp.ClientSession() as session:
-        # Pasarela 1: API Football-Data
         headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
         for liga in ["WC", "PL", "PD", "BSA"]:
             url_fd = f"[https://api.football-data.org/v4/competitions/](https://api.football-data.org/v4/competitions/){liga}/standings"
@@ -185,7 +235,6 @@ async def buscar_datos_equipo(nombre_equipo):
                                     }
             except: pass
 
-        # Pasarela 2: API-Sports
         url_as = "[https://v3.football.api-sports.io/teams](https://v3.football.api-sports.io/teams)"
         headers_as = {"x-apisports-key": API_SPORTS_KEY}
         try:
@@ -212,10 +261,9 @@ async def buscar_datos_equipo(nombre_equipo):
                                     }
         except: pass
 
-    # Pasarela 3: IA Pura de datos crudos (Selecciones o Recesos)
     return await obtener_datos_crudos_ia(nombre_limpio)
 
-# --- 6. PYTHON EJECUTA ESTRICTAMENTE LAS MATEMÁTICAS ---
+# --- 8. PYTHON PROCESA LAS MATEMÁTICAS ---
 def calcular_probabilidades(local_stats, visit_stats):
     promedio_goles = 1.25
     
@@ -237,7 +285,7 @@ def calcular_probabilidades(local_stats, visit_stats):
         "cuota_over_minima": round(100 / (p_over if p_over > 0 else 1) * 1.05, 2), "cuota_btts_minima": round(100 / (p_btts if p_btts > 0 else 1) * 1.05, 2)
     }
 
-# --- 7. LA IA RECIBE LA MATEMÁTICA Y REDACTA EL INFORME DE COGNICIÓN ---
+# --- 9. CONFIGURACIÓN DEL PROMPT DE SCOUTING ---
 async def generar_informe_scouting_ia(estadisticas, local_stats, visit_stats, corners, tarjetas):
     prompt = f"""
     Actúa como un Tipster Analítico de Fútbol Profesional. Analiza el cruce: {local_stats['name']} vs {visit_stats['name']}.
@@ -253,14 +301,10 @@ async def generar_informe_scouting_ia(estadisticas, local_stats, visit_stats, co
     📊 1. ANÁLISIS SENSORIAL Y CONTEXTUAL: Cruza el xG matemático calculado con las rachas de los equipos para argumentar el flujo esperado del juego.
     🎯 2. RECOMENDACIÓN PREMIUM (CREA TU APUESTA): Genera una combinada específica para Bet365 uniendo goles, córners y tarjetas basadas en los datos de arriba. Explica la lógica del pick.
     """
-    try:
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, lambda: client.models.generate_content(model='gemini-2.5-flash', contents=prompt))
-        return response.text.strip()
-    except Exception as e: 
-        return f"⚠️ Error en compilación cognitiva: {e}"
+    informe, fuente_motor = await ejecutar_sistema_cognitivo(prompt, es_json=False)
+    return informe, fuente_motor
 
-# --- 8. INTERFAZ Y MANEJADORES DE TELEGRAM ---
+# --- 10. INTERFAZ Y MANEJADORES DE TELEGRAM ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -278,11 +322,10 @@ async def cmd_hoy(message: types.Message):
 
 @dp.callback_query()
 async def manejador_botones_interactivos(callback_query: types.CallbackQuery):
-    # Desbloquea la animación del botón en la app cliente de inmediato
     await callback_query.answer()
     
     if callback_query.data == "info_version":
-        await callback_query.message.answer(f"ℹ️ *Información del Sistema:*\nEstás corriendo el entorno de pruebas analíticas unificado versión `{VERSION_ACTUAL}`.", parse_mode="Markdown")
+        await callback_query.message.answer(f"ℹ️ *Información del Sistema:*\nEstás corriendo el entorno de pruebas analíticas unificado versión `{VERSION_ACTUAL}` con tolerancia asíncrona a fallos de cuota.", parse_mode="Markdown")
         
     elif callback_query.data == "ver_partidos_hoy":
         msg_inicial = await callback_query.message.answer("⏳ Solicitando partidos del día a los servidores...")
@@ -334,65 +377,8 @@ async def analizar_partido(message: types.Message):
     await msg.edit_text(f"⏳ *[██████░░░░] 60%* Extrayendo datos crudos de: {eq_visit}")
     stats_visit = await buscar_datos_equipo(eq_visit)
 
-    await msg.edit_text(f"⏳ *[█████████░] 90%* Python calculando Poisson bajo versión {VERSION_ACTUAL}...")
+    await msg.edit_text(f"⏳ *[█████████░] 90%* Python ejecutando Poisson y delegando al Sistema Analítico DUAL...")
     
     # Python procesa estrictamente el algoritmo matemático
     estadisticas = calcular_probabilidades(stats_local, stats_visit)
-    corners_avg = round((stats_local['corners'] + stats_visit['corners']) / 2, 1)
-    tarjetas_avg = round((stats_local['tarjetas'] + stats_visit['tarjetas']) / 2, 1)
-    
-    partido_id = guardar_prediccion(stats_local['name'], stats_visit['name'], estadisticas['prob_over_25'], estadisticas['prob_btts'])
-    
-    # La IA recibe la matemática resuelta y redacta el informe profundo
-    informe_scouting = await generar_informe_scouting_ia(estadisticas, stats_local, stats_visit, corners_avg, tarjetas_avg)
-    
-    texto_final = (
-        f"🆔 *INFORME PREMIUM METRIC-BET: #{partido_id} ({VERSION_ACTUAL})*\n⚽ *{stats_local['name']} vs {stats_visit['name']}*\n🔬 _L: {stats_local['fuente']} | V: {stats_visit['fuente']}_\n\n"
-        f"📊 *PROYECCIONES MATEMÁTICAS CALCULADAS POR PYTHON:*\n"
-        f"🔹 Goles Esperados (xG): `{estadisticas['xg_local']} - {estadisticas['xg_visitante']}`\n"
-        f"📈 Probabilidad Over 2.5: `{estadisticas['prob_over_25']}%` | *Cuota Mínima:* `{estadisticas['cuota_over_minima']}`\n"
-        f"🔥 Probabilidad Ambos Anotan: `{estadisticas['prob_btts']}%` | *Cuota Mínima:* `{estadisticas['cuota_btts_minima']}`\n"
-        f"🚩 Córners Est.: `~{corners_avg}` | 🟨 Tarjetas Est.: `~{tarjetas_avg}`\n\n"
-        f"🔬 *INFORME TÁCTICO DE SCOUTING (IA AVANZADA):*\n\n{informe_scouting}\n\n"
-        f"📥 Registrar cierre de evento con: `/resultado {partido_id} GolesLocal-GolesVisitante`"
-    )
-    await msg.edit_text(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
-
-@dp.message(Command("resultado"))
-async def registrar_resultado(message: types.Message):
-    argumentos = message.text.replace("/resultado", "").strip().split()
-    if len(argumentos) != 2: 
-        return await message.reply("⚠️ Usa: `/resultado ID Marcador` (Ej: `/resultado 1 2-1`)", reply_markup=obtener_teclado_interactivo())
-    prediccion_id, marcador = argumentos
-    try:
-        goles_l, goles_v = map(int, marcador.split("-"))
-        if registrar_resultado_db(prediccion_id, goles_l, goles_v):
-            await message.reply(f"✅ Marcador guardado con éxito: `{goles_l}-{goles_v}`.", reply_markup=obtener_teclado_interactivo())
-        else: 
-            await message.reply("❌ El ID de predicción provisto no existe.", reply_markup=obtener_teclado_interactivo())
-    except: 
-        await message.reply("⚠️ Error de formato en el marcador. Usa un guion (Ej: 2-0).", reply_markup=obtener_teclado_interactivo())
-
-@dp.message(Command("equipo"))
-async def consulting_equipo_solo(message: types.Message):
-    nombre = re.sub(r'^/equipo(@\w+)?\s+', '', message.text).strip()
-    if not nombre: 
-        return await message.reply("⚠️ Indica el nombre del equipo. Ej: `/equipo Real Madrid`", reply_markup=obtener_teclado_interactivo())
-    msg = await message.reply("🔍 Consultando registros crudos...")
-    data = await buscar_datos_equipo(nombre)
-    texto = f"📋 *MÉTRICAS CRUDAS ({VERSION_ACTUAL}):*\n\n⚽ *Equipo:* {data['name']}\n📈 Forma Reciente: `{data['forma']}`\n🧬 _Origen: {data['fuente']}_\n\n🔹 Goles Anotados/Partido: `{round(data['gf'], 2)}`\n🔸 Goles Recibidos/Partido: `{round(data['gc'], 2)}`"
-    await msg.edit_text(texto, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
-
-async def on_startup(bot: Bot): 
-    inicializar_db()
-    await bot.set_webhook(WEBHOOK_URL)
-
-def main():
-    dp.startup.register(on_startup)
-    app = web.Application()
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
-    web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
-if __name__ == "__main__": 
-    main()
+    corners_avg = round((stats_local['corners'] + stats
