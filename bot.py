@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium v16.1.1-GROQ (Build Corrected & Stable)
+# Proyecto: Value Betting Engine Premium v16.1.2-GROQ (NameError Fixed & Fully Stable)
 
 import os
 import json
@@ -18,7 +18,7 @@ from aiohttp import web
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- 1. CONFIGURACIÓN, CREDENCIALES Y CONSTANTES ---
-VERSION_ACTUAL = "v16.1.1-GROQ" 
+VERSION_ACTUAL = "v16.1.2-GROQ" 
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
@@ -176,13 +176,13 @@ async def consultar_ia_respaldo(prompt):
     except Exception as e:
         return f"❌ Error en la llamada HTTP asíncrona hacia el cluster de Groq: {e}"
 
-# --- 6. NÚCLEO ARQUITECTÓNICO HÍBRIDO (CORRECCIÓN GOOGLE-GENAI SDK) ---
+# --- 6. NÚCLEO ARQUITECTÓNICO HÍBRIDO (CORREGIDO DE TODO NAMEERROR) ---
 async def ejecutar_sistema_cognitivo(prompt, es_json=False):
     """Conmutador inteligente: Envía el prompt a Gemini; ante un RESOURCE_EXHAUSTED redirige a Groq"""
     try:
         loop = asyncio.get_event_loop()
         
-        # FIX: Mapeo nativo por diccionario para evitar el AttributeError de GenerateContentConfig
+        # Corrección: Diccionario nativo directo sin depender de genai_types
         config_dict = {"response_mime_type": "application/json"} if es_json else None
         
         # Intento con el motor primario (Gemini)
@@ -197,14 +197,12 @@ async def ejecutar_sistema_cognitivo(prompt, es_json=False):
         return response.text.strip(), "Métricas Crudas (Gemini)" if es_json else "Gemini-2.5"
     except Exception as e:
         error_str = str(e)
-        # Interceptamos saturación de cuota de Gemini (429 / RESOURCE_EXHAUSTED)
         if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
             if es_json:
                 prompt += " Responde estrictamente un JSON plano, sin sintaxis ni marcas de bloques markdown."
             resultado_groq = await consultar_ia_respaldo(prompt)
             return resultado_groq, "Métricas Crudas (Groq)" if es_json else "Groq LPU"
         else:
-            # Re-lanzamos cualquier otro error ajeno a cuotas
             raise e
 
 # --- 7. EXTRACCIÓN COGNITIVA DE MÉTRICAS COMPLEMENTARIAS ---
@@ -385,4 +383,69 @@ async def analizar_partido(message: types.Message):
     eq_local, eq_visit = argumentos.split(" vs ")
     msg = await message.reply("⏳ *[░░░░░░░░░░] 0%* Abriendo pasarelas asíncronas...")
 
-    await msg.edit_text(f"⏳ *[███░░░░░░░] 30%
+    await msg.edit_text(f"⏳ *[███░░░░░░░] 30%* Extrayendo datos crudos de: {eq_local}")
+    stats_local = await buscar_datos_equipo(eq_local)
+    
+    await msg.edit_text(f"⏳ *[██████░░░░] 60%* Extrayendo datos crudos de: {eq_visit}")
+    stats_visit = await buscar_datos_equipo(eq_visit)
+
+    await msg.edit_text(f"⏳ *[█████████░] 90%* Python ejecutando Poisson y gestionando motor analítico híbrido...")
+    
+    estadisticas = calcular_probabilidades(stats_local, stats_visit)
+    corners_avg = round((stats_local['corners'] + stats_visit['corners']) / 2, 1)
+    tarjetas_avg = round((stats_local['tarjetas'] + stats_visit['tarjetas']) / 2, 1)
+    
+    partido_id = guardar_prediccion(stats_local['name'], stats_visit['name'], estadisticas['prob_over_25'], estadisticas['prob_btts'])
+    informe_scouting, motor_usado = await generar_informe_scouting_ia(estadisticas, stats_local, stats_visit, corners_avg, tarjetas_avg)
+    
+    texto_final = (
+        f"🆔 *INFORME PREMIUM METRIC-BET: #{partido_id} ({VERSION_ACTUAL})*\n⚽ *{stats_local['name']} vs {stats_visit['name']}*\n"
+        f"🔬 _L: {stats_local['fuente']} | V: {stats_visit['fuente']} | Motor IA: {motor_usado}_\n\n"
+        f"📊 *PROYECCIONES MATEMÁTICAS CALCULADAS POR PYTHON:*\n"
+        f"🔹 Goles Esperados (xG): `{estadisticas['xg_local']} - {estadisticas['xg_visitante']}`\n"
+        f"📈 Probabilidad Over 2.5: `{estadisticas['prob_over_25']}%` | *Cuota Mínima:* `{estadisticas['cuota_over_minima']}`\n"
+        f"🔥 Probabilidad Ambos Anotan: `{estadisticas['prob_btts']}%` | *Cuota Mínima:* `{estadisticas['cuota_btts_minima']}`\n"
+        f"🚩 Córners Est.: `~{corners_avg}` | 🟨 Tarjetas Est.: `~{tarjetas_avg}`\n\n"
+        f"🔬 *INFORME TÁCTICO DE SCOUTING ({motor_usado}):*\n\n{informe_scouting}\n\n"
+        f"📥 Registrar cierre de evento con: `/resultado {partido_id} GolesLocal-GolesVisitante`"
+    )
+    await msg.edit_text(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+
+@dp.message(Command("resultado"))
+async def registrar_resultado(message: types.Message):
+    argumentos = message.text.replace("/resultado", "").strip().split()
+    if len(argumentos) != 2: 
+        return await message.reply("⚠️ Usa: `/resultado ID Marcador` (Ej: `/resultado 1 2-1`)", reply_markup=obtener_teclado_interactivo())
+    prediccion_id, marcador = argumentos
+    try:
+        goles_l, goles_v = map(int, marcador.split("-"))
+        if registrar_resultado_db(prediccion_id, goles_l, goles_v):
+            await message.reply(f"✅ Marcador guardado con éxito: `{goles_l}-{goles_v}`.", reply_markup=obtener_teclado_interactivo())
+        else: 
+            await message.reply("❌ El ID de predicción provisto no existe.", reply_markup=obtener_teclado_interactivo())
+    except: 
+        await message.reply("⚠️ Error de formato en el marcador. Usa un guion (Ej: 2-0).", reply_markup=obtener_teclado_interactivo())
+
+@dp.message(Command("equipo"))
+async def consulting_equipo_solo(message: types.Message):
+    nombre = re.sub(r'^/equipo(@\w+)?\s+', '', message.text).strip()
+    if not nombre: 
+        return await message.reply("⚠️ Indica el nombre del equipo. Ej: `/equipo Real Madrid`", reply_markup=obtener_teclado_interactivo())
+    msg = await message.reply("🔍 Consultando registros crudos...")
+    data = await buscar_datos_equipo(nombre)
+    texto = f"📋 *MÉTRICAS CRUDAS ({VERSION_ACTUAL}):*\n\n⚽ *Equipo:* {data['name']}\n📈 Forma Reciente: `{data['forma']}`\n🧬 _Origen: {data['fuente']}_\n\n🔹 Goles Anotados/Partido: `{round(data['gf'], 2)}`\n🔸 Goles Recibidos/Partido: `{round(data['gc'], 2)}`"
+    await msg.edit_text(texto, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+
+async def on_startup(bot: Bot): 
+    inicializar_db()
+    await bot.set_webhook(WEBHOOK_URL)
+
+def main():
+    dp.startup.register(on_startup)
+    app = web.Application()
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+    web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+if __name__ == "__main__": 
+    main()
