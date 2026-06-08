@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium v16.1.3-GROQ (Uptime & Timeout Fixed)
+# Proyecto: Value Betting Engine Premium v16.1.4-GROQ - Solución Integral MESSAGE_TOO_LONG
 
 import os
 import json
@@ -18,7 +18,7 @@ from aiohttp import web
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- 1. CONFIGURACIÓN, CREDENCIALES Y CONSTANTES ---
-VERSION_ACTUAL = "v16.1.3-GROQ" 
+VERSION_ACTUAL = "v16.1.4-GROQ" 
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
@@ -147,11 +147,11 @@ async def consultar_ia_respaldo(prompt):
     payload = {
         "model": MODELO_GROQ,
         "messages": [
-            {"role": "system", "content": "Eres un Tipster Analítico Profesional. Generas informes técnicos de fútbol usando Markdown limpio."},
+            {"role": "system", "content": "Eres un Tipster Analítico Profesional. Generas informes de fútbol concisos en formato Markdown. Sé específico pero limita tu extensión a un máximo de 4 párrafos."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.25,
-        "max_tokens": 1200
+        "max_tokens": 800 # Reducción de tokens para mitigar el exceso de caracteres
     }
     
     try:
@@ -212,7 +212,6 @@ async def buscar_datos_equipo(nombre_equipo):
     
     async with aiohttp.ClientSession() as session:
         headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-        # Reducción drástica del timeout a 0.8s para evitar cuelgues en Telegram
         for liga in ["WC", "PL", "PD"]:
             url_fd = f"https://api.football-data.org/v4/competitions/{liga}/standings"
             try:
@@ -254,16 +253,17 @@ def calcular_probabilidades(local_stats, visit_stats):
 # --- 9. CONFIGURACIÓN DEL PROMPT ANALÍTICO ---
 async def generar_informe_scouting_ia(estadisticas, local_stats, visit_stats, corners, tarjetas):
     prompt = f"""
-    Analiza el partido: {local_stats['name']} vs {visit_stats['name']}.
+    Analiza de forma ejecutiva el partido: {local_stats['name']} vs {visit_stats['name']}.
     Datos calculados:
     - xG: Local {estadisticas['xg_local']} vs {estadisticas['xg_visitante']} Visitante
     - Probabilidad Over 2.5: {estadisticas['prob_over_25']}% (Cuota sugerida: >{estadisticas['cuota_over_minima']})
     - Probabilidad BTTS: {estadisticas['prob_btts']}% (Cuota sugerida: >{estadisticas['cuota_btts_minima']})
     - Córners Totales: ~{corners} | Tarjetas Totales: ~{tarjetas}
 
-    Genera un informe usando formato Markdown estructurado con estas dos secciones:
-    📊 1. ANÁLISIS SENSORIAL Y CONTEXTUAL: Argumentación táctica del juego basada en datos.
-    🎯 2. RECOMENDACIÓN PREMIUM (CREA TU APUESTA): Una apuesta combinada lógica para Bet365/Wplay.
+    Genera un informe con formato Markdown estructurado con estas dos secciones obligatorias:
+    📊 1. ANÁLISIS SENSORIAL Y CONTEXTUAL: Argumentación táctica basada en datos.
+    🎯 2. RECOMENDACIÓN PREMIUM (CREA TU APUESTA): Una apuesta combinada para Bet365/Wplay.
+    Nota: Sé muy conciso y directo, evita extenderte innecesariamente.
     """
     informe, fuente_motor = await ejecutar_sistema_cognitivo(prompt, es_json=False)
     return informe, fuente_motor
@@ -305,12 +305,17 @@ async def analizar_partido(message: types.Message):
         f"🔬 *INFORME TÁCTICO DE SCOUTING:*\n\n{informe_scouting}\n\n"
         f"📥 Registrar cierre con: `/resultado {partido_id} GolesLocal-GolesVisitante`"
     )
+    
+    # CONTROL DE SEGURIDAD ELITE: Truncado estricto para evitar el error MESSAGE_TOO_LONG de Telegram
+    if len(texto_final) > 4000:
+        texto_final = texto_final[:3950] + "\n\n⚠️ _[Informe truncado por límite de caracteres de Telegram]_"
+        
     await msg.edit_text(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
 
 @dp.message(Command("resultado"))
 async def registrar_resultado(message: types.Message):
     argumentos = message.text.replace("/resultado", "").strip().split()
-    if len(argumentos) != 2: return await message.reply("⚠️ Usa: `/resultado ID Marcador` (Ej: `/resultado 1 2-1`)")
+    if len(len(argumentos)) != 2: return await message.reply("⚠️ Usa: `/resultado ID Marcador` (Ej: `/resultado 1 2-1`)")
     prediccion_id, marcador = argumentos
     try:
         goles_l, goles_v = map(int, marcador.split("-"))
@@ -321,10 +326,9 @@ async def registrar_resultado(message: types.Message):
     except: 
         await message.reply("⚠️ Error de formato.")
 
-# --- 11. MANEJADOR DE SALUD PARA UPTIMEROBOT (HEALTCHECK RATIO) ---
+# --- 11. MANEJADOR DE SALUD PARA UPTIMEROBOT ---
 async def handles_ping_alive(request):
-    """Ruta Raíz HTTP GET que responde a UptimeRobot para mantener la app activa 24/7"""
-    return web.json_response({"status": "online", "version": VERSION_ACTUAL, "engine": "stable"})
+    return web.json_response({"status": "online", "version": VERSION_ACTUAL})
 
 async def on_startup(bot: Bot): 
     inicializar_db()
@@ -333,10 +337,7 @@ async def on_startup(bot: Bot):
 def main():
     dp.startup.register(on_startup)
     app = web.Application()
-    
-    # NUEVO: Vinculamos la ruta raíz '/' para responder los pings de monitoreo
     app.router.add_get("/", handles_ping_alive)
-    
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)
     web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
