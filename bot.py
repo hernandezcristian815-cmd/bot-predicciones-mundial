@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium v16.1.7-GROQ - Estabilización de Webhook y Corrección NameError
+# Proyecto: Value Betting Engine Premium v16.1.8-GROQ - Procesamiento Desacoplado Anti-Timeouts
 
 import os
 import json
@@ -18,7 +18,7 @@ from aiohttp import web
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- 1. CONFIGURACIÓN, CREDENCIALES Y CONSTANTES ---
-VERSION_ACTUAL = "v16.1.7-GROQ" 
+VERSION_ACTUAL = "v16.1.8-GROQ" 
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
@@ -89,7 +89,27 @@ def registrar_resultado_db(prediccion_id, goles_l, goles_v):
     conn.close()
     return filas_afectadas > 0
 
-# --- 4. PASARELAS ASÍNCRONAS PARA EXTRACCIÓN NUMÉRICA ---
+# --- 4. CONSULTA ASÍNCROMA DE AGENDAS ---
+async def consultar_partidos_del_dia():
+    url_matches = "https://api.football-data.org/v4/matches"
+    headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
+    partidos_detectados = []
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url_matches, headers=headers, timeout=2.0) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    for m in data.get("matches", []):
+                        cod_liga = m.get("competition", {}).get("code")
+                        if cod_liga in LIGAS_MAPA:
+                            partidos_detectados.append({
+                                "liga": cod_liga, "local": m["homeTeam"]["name"],
+                                "visitante": m["awayTeam"]["name"], "hora": m["utcDate"][11:16]
+                            })
+    except: pass
+    return partidos_detectados
+
+# --- 5. PASARELAS ASÍNCRONAS PARA EXTRACCIÓN NUMÉRICA ---
 async def consultar_groq_crudo(prompt):
     if not RESPALDO_API_KEY: return None
     headers = {"Authorization": f"Bearer {RESPALDO_API_KEY}", "Content-Type": "application/json"}
@@ -103,8 +123,7 @@ async def consultar_groq_crudo(prompt):
     }
     try:
         async with aiohttp.ClientSession() as session:
-            # Timeout estricto de 3.0s para evitar congelamiento de Webhook
-            async with session.post(RESPALDO_API_URL, headers=headers, json=payload, timeout=3.0) as response:
+            async with session.post(RESPALDO_API_URL, headers=headers, json=payload, timeout=5.0) as response:
                 if response.status == 200:
                     data = await response.json()
                     text = data['choices'][0]['message']['content'].strip()
@@ -116,13 +135,12 @@ async def consultar_groq_crudo(prompt):
 async def consultar_gemini_crudo(prompt):
     try:
         loop = asyncio.get_event_loop()
-        # Se añade un control de tiempo futuro en la ejecución del hilo ejecutor
         response = await asyncio.wait_for(
             loop.run_in_executor(
                 None, lambda: client.models.generate_content(
                     model='gemini-2.5-flash', contents=prompt, config={"response_mime_type": "application/json"}
                 )
-            ), timeout=3.0
+            ), timeout=5.0
         )
         text = response.text.strip()
         text = re.sub(r'^```json\s*|\s*```$', '', text, flags=re.IGNORECASE).strip()
@@ -130,7 +148,7 @@ async def consultar_gemini_crudo(prompt):
     except: pass
     return None
 
-# --- 5. LÓGICA COGNITIVA MULTI-ENGINE ---
+# --- 6. LÓGICA COGNITIVA MULTI-ENGINE (CON COMPULSIÓN DE CONCORDANCIA) ---
 async def obtener_datos_crudos_ia(nombre_equipo):
     prompt = f"""
     Analiza estadísticamente los últimos 10 partidos oficiales del equipo o selección: "{nombre_equipo}".
@@ -153,7 +171,7 @@ async def obtener_datos_crudos_ia(nombre_equipo):
             'corners': (float(res_gemini.get('corners', 4.5)) + float(res_groq.get('corners', 4.5))) / 2,
             'tarjetas': (float(res_gemini.get('tarjetas', 2.0)) + float(res_groq.get('tarjetas', 2.0))) / 2,
             'forma': res_gemini.get('forma', "E-V-D-E-E"),
-            'fuente': "Consenso Híbrido (Gemini + Groq)"
+            'fuente': "Consenso Real (Gemini + Groq)"
         }
     
     single_res = res_gemini or res_groq
@@ -165,12 +183,12 @@ async def obtener_datos_crudos_ia(nombre_equipo):
             'corners': float(single_res.get('corners', 4.5)),
             'tarjetas': float(single_res.get('tarjetas', 2.0)),
             'forma': single_res.get('forma', "E-V-D-E-E"),
-            'fuente': "Single AI Scan (Bypass Activo)"
+            'fuente': "Single AI Scan Core"
         }
 
     return {"name": nombre_equipo, "gf": 1.40, "gc": 1.10, "corners": 4.8, "tarjetas": 1.9, "forma": "V-E-D-V-E", "fuente": "Modelado Resguardo Fijo"}
 
-# --- 6. PROCESAMIENTO MATEMÁTICO PURO (POISSON) ---
+# --- 7. PROCESAMIENTO MATEMÁTICO PURO (POISSON) ---
 def calcular_probabilidades(local_stats, visit_stats):
     promedio_goles = 1.25
     xg_local = max(0.15, (local_stats["gf"] / promedio_goles) * (visit_stats["gc"] / promedio_goles) * promedio_goles)
@@ -188,53 +206,54 @@ def calcular_probabilidades(local_stats, visit_stats):
         "cuota_over_minima": round(100 / (p_over if p_over > 0 else 1) * 1.05, 2), "cuota_btts_minima": round(100 / (p_btts if p_btts > 0 else 1) * 1.05, 2)
     }
 
-# --- 7. REDACCIÓN COGNITIVA DEL SCOUTING ---
+# --- 8. REDACCIÓN COGNITIVA DEL SCOUTING SOBERANO (CON TIEMPOS AMPLIOS) ---
 async def generar_informe_scouting_ia(estadisticas, local_stats, visit_stats, corners, tarjetas):
     prompt = f"""
-    Analiza el partido: {local_stats['name']} vs {visit_stats['name']}.
-    Datos calculados reales:
+    Analiza con máximo rigor y de forma pormenorizada el partido: {local_stats['name']} vs {visit_stats['name']}.
+    Métricas de entrada del sistema:
     - xG Proyectado: Local {estadisticas['xg_local']} vs {estadisticas['xg_visitante']} Visitante
-    - Probabilidad Over 2.5: {estadisticas['prob_over_25']}% (Cuota sugerida: >{estadisticas['cuota_over_minima']})
-    - Probabilidad BTTS: {estadisticas['prob_btts']}% (Cuota sugerida: >{estadisticas['cuota_btts_minima']})
-    - Córners Totales: ~{corners} | Tarjetas Totales: ~{tarjetas}
-    - Formas: Local [{local_stats['forma']}] vs Visitante [{visit_stats['forma']}]
+    - Probabilidad Over 2.5: {estadisticas['prob_over_25']}% (Cuota recomendada: >{estadisticas['cuota_over_minima']})
+    - Probabilidad BTTS: {estadisticas['prob_btts']}% (Cuota recomendada: >{estadisticas['cuota_btts_minima']})
+    - Córners Proyectados: ~{corners} | Tarjetas Proyectadas: ~{tarjetas}
+    - Racha / Forma Reciente: Local [{local_stats['forma']}] vs Visitante [{visit_stats['forma']}]
 
-    Genera un informe estructurado en Markdown con:
-    📊 1. ANÁLISIS SENSORIAL Y CONTEXTUAL
-    🎯 2. RECOMENDACIÓN PREMIUM (CREA TU APUESTA)
-    Nota: Sé directo, analítico y breve.
+    Genera un informe analítico estructurado con formato Markdown limpio (usa ## para títulos):
+    📊 1. ANÁLISIS SENSORIAL Y CONTEXTUAL: Cruza el xG matemático calculado con las rachas de los equipos para argumentar detalladamente el flujo esperado del juego.
+    🎯 2. RECOMENDACIÓN PREMIUM (CREA TU APUESTA): Genera una combinada de alta probabilidad para Bet365/Wplay justificando técnicamente las selecciones.
+    Nota: Sé riguroso y completo, sin prisas. Tu tiempo límite es extenso.
     """
+    # Como esta función corre en una tarea desacoplada, ampliamos el timeout a 25 segundos sin miedo a Telegram
     try:
         loop = asyncio.get_event_loop()
         response = await asyncio.wait_for(
             loop.run_in_executor(None, lambda: client.models.generate_content(model='gemini-2.5-flash', contents=prompt)),
-            timeout=4.0
+            timeout=25.0
         )
-        return response.text.strip(), "Gemini-2.5"
+        return response.text.strip(), "Gemini 2.5-Flash (Especialista)"
     except:
         headers = {"Authorization": f"Bearer {RESPALDO_API_KEY}", "Content-Type": "application/json"}
         payload = {
             "model": MODELO_GROQ,
             "messages": [
-                {"role": "system", "content": "Eres un Tipster Analítico. Redactas informes concisos en Markdown sin exceder caracteres."},
+                {"role": "system", "content": "Eres un Tipster Analítico Deportivo de Élite. Generas análisis pormenorizados y serios de fútbol en Markdown."},
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.3, "max_tokens": 600
+            "temperature": 0.25, "max_tokens": 1000
         }
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(RESPALDO_API_URL, headers=headers, json=payload, timeout=4.0) as response:
+                async with session.post(RESPALDO_API_URL, headers=headers, json=payload, timeout=25.0) as response:
                     if response.status == 200:
                         data = await response.json()
-                        return data['choices'][0]['message']['content'].strip(), "Groq LPU (Respaldo)"
+                        return data['choices'][0]['message']['content'].strip(), "Groq LPU Llama-3 (Soporte Élite)"
         except: pass
-    return "⚠️ El módulo analítico de texto usó proyecciones básicas por alta latencia de red.", "Predictor Lineal Base"
+    return "⚠️ El módulo analítico de texto no pudo completar la redacción táctica detallada debido a una saturación crítica en las pasarelas externas.", "Predictor de Emergencia"
 
-# --- 8. INTERFAZ Y MANEJADORES DE TELEGRAM ---
+# --- 9. INTERFAZ Y MANEJADORES DE TELEGRAM ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    texto_bienvenida = f"🤖 *Value Betting Engine Premium Active*\n⚙️ *Versión:* `{VERSION_ACTUAL}`\n\nEl sistema unificado y corregido está en línea."
+    texto_bienvenida = f"🤖 *Value Betting Engine Premium Active*\n⚙️ *Versión:* `{VERSION_ACTUAL}`\n\nEl sistema desacoplado de procesamiento soberano está listo."
     await message.answer(texto_bienvenida, reply_markup=obtener_teclado_interactivo(), parse_mode="Markdown")
 
 @dp.message(Command("analizar"))
@@ -245,43 +264,56 @@ async def analizar_partido(message: types.Message):
     
     eq_local, eq_visit = argumentos.split(" vs ")
     
-    # Mensaje inicial con barra de progreso corregida estéticamente
-    msg = await message.reply("⏳ *[██░░░░░░░░] 20%* Conectando compuertas y enviando peticiones en paralelo...")
+    # 1. El bot responde de inmediato liberando la cola del Webhook de Telegram
+    msg = await message.reply("⏳ *[██░░░░░░░░] 20%* Abriendo compuertas asíncronas y consultando promedios por consenso...")
 
-    stats_local = await obtener_datos_crudos_ia(eq_local)
-    await msg.edit_text(f"⏳ *[█████░░░░░] 50%* Datos de {eq_local} procesados por Consenso. Extrayendo rival...")
-    
-    stats_visit = await obtener_datos_crudos_ia(eq_visit)
-    await msg.edit_text("⏳ *[████████░░] 80%* Operando matrices Poisson de Python y redactando informe táctico...")
+    # Creamos y lanzamos la tarea pesada en segundo plano totalmente desacoplada de la petición web de Telegram
+    asyncio.create_task(procesar_analisis_desacoplado(msg, eq_local, eq_visit))
 
-    estadisticas = calcular_probabilidades(stats_local, stats_visit)
-    corners_avg = round((stats_local['corners'] + stats_visit['corners']) / 2, 1)
-    tarjetas_avg = round((stats_local['tarjetas'] + stats_visit['tarjetas']) / 2, 1)
-    
-    partido_id = guardar_prediccion(stats_local['name'], stats_visit['name'], estadisticas['prob_over_25'], estadisticas['prob_btts'])
-    informe_scouting, motor_usado = await generar_informe_scouting_ia(estadisticas, stats_local, stats_visit, corners_avg, tarjetas_avg)
-    
-    texto_final = (
-        f"🆔 *INFORME PREMIUM METRIC-BET: #{partido_id} ({VERSION_ACTUAL})*\n⚽ *{stats_local['name']} vs {stats_visit['name']}*\n"
-        f"🔬 _L: {stats_local['fuente']} | V: {stats_visit['fuente']} | Redacción: {motor_usado}_\n\n"
-        f"📊 *PROYECCIONES MATEMÁTICAS (PYTHON):*\n"
-        f"🔹 Goles Esperados (xG): `{estadisticas['xg_local']} - {estadisticas['xg_visitante']}`\n"
-        f"📈 Probabilidad Over 2.5: `{estadisticas['prob_over_25']}%` | *Cuota:* `{estadisticas['cuota_over_minima']}`\n"
-        f"🔥 Probabilidad Ambos Anotan: `{estadisticas['prob_btts']}%` | *Cuota:* `{estadisticas['cuota_btts_minima']}`\n"
-        f"🚩 Córners: `~{corners_avg}` | 🟨 Tarjetas: `~{tarjetas_avg}`\n\n"
-        f"🔬 *INFORME TÁCTICO DE SCOUTING:*\n\n{informe_scouting}\n\n"
-        f"📥 Registrar cierre con: `/resultado {partido_id} GolesLocal-GolesVisitante`"
-    )
-    
-    if len(texto_final) > 4000:
-        texto_final = texto_final[:3950] + "\n\n⚠️ _[Informe truncado por tamaño de Telegram]_"
+async def procesar_analisis_desacoplado(msg: types.Message, eq_local, eq_visit):
+    """Esta tarea corre libre en los hilos del servidor de Render, sin límite de 5 segundos de Telegram"""
+    try:
+        # Extraemos los datos crudos cruzando Gemini y Groq en paralelo
+        stats_local = await obtener_datos_crudos_ia(eq_local)
+        await msg.edit_text(f"⏳ *[█████░░░░░] 50%* Datos de {stats_local['name']} listados. Computando rival...")
         
-    await msg.edit_text(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+        stats_visit = await obtener_datos_crudos_ia(eq_visit)
+        await msg.edit_text("⏳ *[████████░░] 80%* Python ejecutando algoritmo Poisson. Redactando scouting cognitivo profundo (Esto puede tomar unos segundos)...")
+
+        # Python opera el backend matemático de forma instantánea
+        estadisticas = calcular_probabilidades(stats_local, stats_visit)
+        corners_avg = round((stats_local['corners'] + stats_visit['corners']) / 2, 1)
+        tarjetas_avg = round((stats_local['tarjetas'] + stats_visit['tarjetas']) / 2, 1)
+        
+        partido_id = guardar_prediccion(stats_local['name'], stats_visit['name'], estadisticas['prob_over_25'], estadisticas['prob_btts'])
+        
+        # LLAMADA SOBERANA: Las IAs tienen hasta 25 segundos para redactar un informe serio y pormenorizado
+        informe_scouting, motor_usado = await generar_informe_scouting_ia(estadisticas, stats_local, stats_visit, corners_avg, tarjetas_avg)
+        
+        texto_final = (
+            f"🆔 *INFORME PREMIUM METRIC-BET: #{partido_id} ({VERSION_ACTUAL})*\n⚽ *{stats_local['name']} vs {stats_visit['name']}*\n"
+            f"🔬 _L: {stats_local['fuente']} | V: {stats_visit['fuente']} | Redacción: {motor_usado}_\n\n"
+            f"📊 *PROYECCIONES MATEMÁTICAS (PYTHON):*\n"
+            f"🔹 Goles Esperados (xG): `{estadisticas['xg_local']} - {estadisticas['xg_visitante']}`\n"
+            f"📈 Probabilidad Over 2.5: `{estadisticas['prob_over_25']}%` | *Cuota:* `{estadisticas['cuota_over_minima']}`\n"
+            f"🔥 Probabilidad Ambos Anotan: `{estadisticas['prob_btts']}%` | *Cuota:* `{estadisticas['cuota_btts_minima']}`\n"
+            f"🚩 Córners: `~{corners_avg}` | 🟨 Tarjetas: `~{tarjetas_avg}`\n\n"
+            f"🔬 *INFORME TÁCTICO DE SCOUTING SERIO Y DETALLADO:*\n\n{informe_scouting}\n\n"
+            f"📥 Registrar cierre con: `/resultado {partido_id} GolesLocal-GolesVisitante`"
+        )
+        
+        if len(texto_final) > 4000:
+            texto_final = texto_final[:3950] + "\n\n⚠️ _[Informe truncado por tamaño máximo de Telegram]_"
+            
+        await msg.edit_text(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+        
+    except Exception as e:
+        print(f"Error crítico en hilo desacoplado: {e}")
+        await msg.edit_text("❌ Ocurrió un desajuste imprevisto en los subprocesos de cómputo del servidor.", reply_markup=obtener_teclado_interactivo())
 
 @dp.message(Command("resultado"))
 async def registrar_resultado(message: types.Message):
     argumentos = message.text.replace("/resultado", "").strip().split()
-    # SOLUCIÓN DEL CRASH: Eliminado el len() duplicado accidental
     if len(argumentos) != 2: 
         return await message.reply("⚠️ Usa: `/resultado ID Marcador` (Ej: `/resultado 1 2-1`)")
     
