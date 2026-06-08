@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium v16.1.4-GROQ - Solución Integral MESSAGE_TOO_LONG
+# Proyecto: Value Betting Engine Premium v16.1.6-GROQ - Consenso de IA en Paralelo y Barra de Progreso Recuperada
 
 import os
 import json
@@ -18,7 +18,7 @@ from aiohttp import web
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- 1. CONFIGURACIÓN, CREDENCIALES Y CONSTANTES ---
-VERSION_ACTUAL = "v16.1.4-GROQ" 
+VERSION_ACTUAL = "v16.1.6-GROQ" 
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
@@ -94,145 +94,98 @@ async def consultar_partidos_del_dia():
     url_matches = "https://api.football-data.org/v4/matches"
     headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
     partidos_detectados = []
-    
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url_matches, headers=headers, timeout=2.0) as response:
                 if response.status == 200:
                     data = await response.json()
-                    matches = data.get("matches", [])
-                    for m in matches:
+                    for m in data.get("matches", []):
                         cod_liga = m.get("competition", {}).get("code")
                         if cod_liga in LIGAS_MAPA:
                             partidos_detectados.append({
-                                "liga": cod_liga,
-                                "local": m["homeTeam"]["name"],
-                                "visitante": m["awayTeam"]["name"],
-                                "hora": m["utcDate"][11:16]
+                                "liga": cod_liga, "local": m["homeTeam"]["name"],
+                                "visitante": m["awayTeam"]["name"], "hora": m["utcDate"][11:16]
                             })
-    except:
-        pass
-        
-    if not partidos_detectados and API_SPORTS_KEY:
-        url_as = "https://v3.football.api-sports.io/fixtures"
-        headers_as = {"x-apisports-key": API_SPORTS_KEY}
-        fecha_hoy = datetime.now().strftime('%Y-%m-%d')
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url_as, headers=headers_as, params={"date": fecha_hoy}, timeout=2.0) as res:
-                    if res.status == 200:
-                        data = await res.json()
-                        fixtures = data.get("response", [])
-                        for f in fixtures[:10]:
-                            partidos_detectados.append({
-                                "liga": f["league"]["country"][:3].upper(),
-                                "local": f["teams"]["home"]["name"],
-                                "visitante": f["teams"]["away"]["name"],
-                                "hora": f["fixture"]["date"][11:16]
-                            })
-        except:
-            pass
-            
+    except: pass
     return partidos_detectados
 
-# --- 5. PASARELA DE RESPALDO: GROQ LPU ---
-async def consultar_ia_respaldo(prompt):
-    if not RESPALDO_API_KEY:
-        return "⚠️ Error de Cuota: Gemini se saturó y no se detectó la clave de Groq."
-        
-    headers = {
-        "Authorization": f"Bearer {RESPALDO_API_KEY}",
-        "Content-Type": "application/json"
-    }
+# --- 5. PASARELAS INDEPENDIENTES PARA LLAMADAS AISLADAS ---
+async def consultar_groq_crudo(prompt):
+    """Consulta directa a Groq para extraer estadísticas numéricas"""
+    if not RESPALDO_API_KEY: return None
+    headers = {"Authorization": f"Bearer {RESPALDO_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": MODELO_GROQ,
         "messages": [
-            {"role": "system", "content": "Eres un Tipster Analítico Profesional. Generas informes de fútbol concisos en formato Markdown. Sé específico pero limita tu extensión a un máximo de 4 párrafos."},
+            {"role": "system", "content": "Responde estrictamente un objeto JSON plano. No saludes, no uses marcas markdown."},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.25,
-        "max_tokens": 800 # Reducción de tokens para mitigar el exceso de caracteres
+        "temperature": 0.1, "max_tokens": 300
     }
-    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(RESPALDO_API_URL, headers=headers, json=payload, timeout=8.0) as response:
+            async with session.post(RESPALDO_API_URL, headers=headers, json=payload, timeout=4.0) as response:
                 if response.status == 200:
-                    res_data = await response.json()
-                    return res_data['choices'][0]['message']['content'].strip() + "\n\n⚡ _(Análisis de respaldo por Groq LPU)_"
-                else:
-                    return "❌ Cuota excedida temporalmente en pasarelas de lenguaje artificial."
-    except:
-        return "❌ Error de conexión temporal con las pasarelas cognitivas."
+                    data = await response.json()
+                    text = data['choices'][0]['message']['content'].strip()
+                    text = re.sub(r'^```json\s*|\s*```$', '', text, flags=re.IGNORECASE).strip()
+                    return json.loads(text)
+    except: pass
+    return None
 
-# --- 6. NÚCLEO ARQUITECTÓNICO HÍBRIDO ---
-async def ejecutar_sistema_cognitivo(prompt, es_json=False):
+async def consultar_gemini_crudo(prompt):
+    """Consulta directa a Gemini para extraer estadísticas numéricas"""
     try:
         loop = asyncio.get_event_loop()
-        config_dict = {"response_mime_type": "application/json"} if es_json else None
-        
         response = await loop.run_in_executor(
-            None, 
-            lambda: client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config=config_dict
+            None, lambda: client.models.generate_content(
+                model='gemini-2.5-flash', contents=prompt, config={"response_mime_type": "application/json"}
             )
         )
-        return response.text.strip(), "Gemini-2.5"
-    except Exception as e:
-        error_str = str(e)
-        if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-            if es_json:
-                prompt += " Responde estrictamente un JSON plano, sin sintaxis ni marcas de bloques markdown."
-            resultado_groq = await consultar_ia_respaldo(prompt)
-            return resultado_groq, "Groq LPU"
-        else:
-            raise e
+        text = response.text.strip()
+        text = re.sub(r'^```json\s*|\s*```$', '', text, flags=re.IGNORECASE).strip()
+        return json.loads(text)
+    except: pass
+    return None
 
-# --- 7. EXTRACCIÓN COGNITIVA Y OPTIMIZACIÓN DE TIMEOUTS ---
+# --- 6. EXTRACCIÓN PARALELA Y COMPARACIÓN MÚLTIPLE ---
 async def obtener_datos_crudos_ia(nombre_equipo):
     prompt = f"""
-    Proporciona los datos estadísticos crudos del equipo: "{nombre_equipo}" en sus últimos 10 juegos.
-    Devuelve estrictamente un objeto JSON:
-    {{"name": "{nombre_equipo}", "gf": 1.50, "gc": 1.10, "corners": 5.0, "tarjetas": 2.0, "forma": "V-E-V-D-V"}}
+    Analiza estadísticamente los últimos 10 partidos oficiales del equipo o selección: "{nombre_equipo}".
+    Devuelve estrictamente un objeto JSON plano con promedios precisos por partido en este formato:
+    {{"name": "{nombre_equipo}", "gf": 1.65, "gc": 0.95, "corners": 5.4, "tarjetas": 2.1, "forma": "V-V-E-D-V"}}
     """
-    try:
-        raw_text, fuente = await ejecutar_sistema_cognitivo(prompt, es_json=True)
-        raw_text = re.sub(r'^```json\s*', '', raw_text)
-        raw_text = re.sub(r'\s*```$', '', raw_text)
-        data = json.loads(raw_text)
-        data['fuente'] = fuente
-        return data
-    except:
-        return {"name": nombre_equipo, "gf": 1.30, "gc": 1.20, "corners": 4.5, "tarjetas": 2.0, "forma": "E-V-D-E-E", "fuente": "Resguardo Matemático"}
+    # Lanzamos ambas consultas simultáneamente al espacio de hilos asíncronos para ganar velocidad
+    res_gemini, res_groq = await asyncio.gather(
+        consultar_gemini_crudo(prompt),
+        consultar_groq_crudo(prompt)
+    )
+
+    # LÓGICA DE CONSENSO Y COMPARACIÓN: Promediamos los resultados de ambos motores si están disponibles
+    if res_gemini and res_groq:
+        return {
+            'name': res_gemini.get('name', nombre_equipo),
+            'gf': (float(res_gemini.get('gf', 1.30)) + float(res_groq.get('gf', 1.30))) / 2,
+            'gc': (float(res_gemini.get('gc', 1.20)) + float(res_groq.get('gc', 1.20))) / 2,
+            'corners': (float(res_gemini.get('corners', 4.5)) + float(res_groq.get('corners', 4.5))) / 2,
+            'tarjetas': (float(res_gemini.get('tarjetas', 2.0)) + float(res_groq.get('tarjetas', 2.0))) / 2,
+            'forma': res_gemini.get('forma', "E-V-D-E-E"),
+            'fuente': "Consenso Híbrido (Gemini + Groq)"
+        }
+    
+    # Resguardos por si alguna de las pasarelas falla por Rate Limits
+    single_res = res_gemini or res_groq
+    if single_res:
+        single_res['fuente'] = "Single AI Model Scan"
+        return single_res
+
+    return {"name": nombre_equipo, "gf": 1.40, "gc": 1.10, "corners": 4.8, "tarjetas": 1.9, "forma": "V-E-D-V-E", "fuente": "Modelado Resguardo Fijo"}
 
 async def buscar_datos_equipo(nombre_equipo):
     nombre_limpio = nombre_equipo.strip()
-    
-    async with aiohttp.ClientSession() as session:
-        headers_fd = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-        for liga in ["WC", "PL", "PD"]:
-            url_fd = f"https://api.football-data.org/v4/competitions/{liga}/standings"
-            try:
-                async with session.get(url_fd, headers=headers_fd, timeout=0.8) as res:
-                    if res.status == 200:
-                        data = await res.json()
-                        tabla = next((t for t in data.get('standings', []) if t['type'] == 'TOTAL'), None)
-                        if tabla:
-                            for row in tabla['table']:
-                                name_oficial = row['team']['name']
-                                if nombre_limpio.lower() in name_oficial.lower() or name_oficial.lower() in nombre_limpio.lower():
-                                    partidos = max(1, row['playedGames'])
-                                    return {
-                                        'name': name_oficial, 'gf': row['goalsFor'] / partidos, 'gc': row['goalsAgainst'] / partidos, 
-                                        'corners': 5.0, 'tarjetas': 2.0, 'forma': "Data Activa", 'fuente': f"Football-Data ({liga})"
-                                    }
-            except: pass
-
     return await obtener_datos_crudos_ia(nombre_limpio)
 
-# --- 8. PROCESAMIENTO MATEMÁTICO PURO (POISSON) ---
+# --- 7. PROCESAMIENTO MATEMÁTICO PURO (POISSON) ---
 def calcular_probabilidades(local_stats, visit_stats):
     promedio_goles = 1.25
     xg_local = max(0.15, (local_stats["gf"] / promedio_goles) * (visit_stats["gc"] / promedio_goles) * promedio_goles)
@@ -250,29 +203,52 @@ def calcular_probabilidades(local_stats, visit_stats):
         "cuota_over_minima": round(100 / (p_over if p_over > 0 else 1) * 1.05, 2), "cuota_btts_minima": round(100 / (p_btts if p_btts > 0 else 1) * 1.05, 2)
     }
 
-# --- 9. CONFIGURACIÓN DEL PROMPT ANALÍTICO ---
+# --- 8. REDACCIÓN COGNITIVA DEL SCOUTING ---
 async def generar_informe_scouting_ia(estadisticas, local_stats, visit_stats, corners, tarjetas):
     prompt = f"""
-    Analiza de forma ejecutiva el partido: {local_stats['name']} vs {visit_stats['name']}.
-    Datos calculados:
-    - xG: Local {estadisticas['xg_local']} vs {estadisticas['xg_visitante']} Visitante
+    Analiza el partido: {local_stats['name']} vs {visit_stats['name']}.
+    Datos calculados reales:
+    - xG Proyectado: Local {estadisticas['xg_local']} vs {estadisticas['xg_visitante']} Visitante
     - Probabilidad Over 2.5: {estadisticas['prob_over_25']}% (Cuota sugerida: >{estadisticas['cuota_over_minima']})
     - Probabilidad BTTS: {estadisticas['prob_btts']}% (Cuota sugerida: >{estadisticas['cuota_btts_minima']})
     - Córners Totales: ~{corners} | Tarjetas Totales: ~{tarjetas}
+    - Formas: Local [{local_stats['forma']}] vs Visitante [{visit_stats['forma']}]
 
     Genera un informe con formato Markdown estructurado con estas dos secciones obligatorias:
-    📊 1. ANÁLISIS SENSORIAL Y CONTEXTUAL: Argumentación táctica basada en datos.
-    🎯 2. RECOMENDACIÓN PREMIUM (CREA TU APUESTA): Una apuesta combinada para Bet365/Wplay.
-    Nota: Sé muy conciso y directo, evita extenderte innecesariamente.
+    📊 1. ANÁLISIS SENSORIAL Y CONTEXTUAL: Argumentación táctica precisa.
+    🎯 2. RECOMENDACIÓN PREMIUM (CREA TU APUESTA): Una apuesta combinada lógica para Bet365/Wplay.
+    Nota: Sé directo y breve para evitar superar límites de caracteres de Telegram.
     """
-    informe, fuente_motor = await ejecutar_sistema_cognitivo(prompt, es_json=False)
-    return informe, fuente_motor
+    # Intentamos redactar el reporte de texto final con Gemini
+    try:
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, lambda: client.models.generate_content(model='gemini-2.5-flash', contents=prompt))
+        return response.text.strip(), "Gemini-2.5"
+    except:
+        # Si Gemini se saturó de tokens, Groq asume la redacción del texto instantáneamente
+        headers = {"Authorization": f"Bearer {RESPALDO_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": MODELO_GROQ,
+            "messages": [
+                {"role": "system", "content": "Eres un Tipster Analítico Profesional. Redactas informes concisos en Markdown."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.3, "max_tokens": 800
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(RESPALDO_API_URL, headers=headers, json=payload, timeout=8.0) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data['choices'][0]['message']['content'].strip(), "Groq LPU (Respaldo)"
+        except: pass
+    return "⚠️ El módulo analítico de texto no pudo compilarse por saturación general de red.", "Ninguno"
 
-# --- 10. INTERFAZ Y MANEJADORES DE TELEGRAM ---
+# --- 9. INTERFAZ Y MANEJADORES DE TELEGRAM ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    texto_bienvenida = f"🤖 *Value Betting Engine Premium Active*\n⚙️ *Versión:* `{VERSION_ACTUAL}`\n\nEl sistema unificado está listo."
+    texto_bienvenida = f"🤖 *Value Betting Engine Premium Active*\n⚙️ *Versión:* `{VERSION_ACTUAL}`\n\nEl sistema híbrido de comparación asíncrona está listo."
     await message.answer(texto_bienvenida, reply_markup=obtener_teclado_interactivo(), parse_mode="Markdown")
 
 @dp.message(Command("analizar"))
@@ -282,11 +258,18 @@ async def analizar_partido(message: types.Message):
         return await message.reply("⚠️ Usa:\n`/analizar Local vs Visitante`", reply_markup=obtener_teclado_interactivo())
     
     eq_local, eq_visit = argumentos.split(" vs ")
-    msg = await message.reply("⏳ *Procesando solicitud en los servidores alternos...*")
+    
+    # RECUPERACIÓN VISUAL: Mensaje inicial con barra de progreso interactiva
+    msg = await message.reply("⏳ *[██░░░░░░░░] 20%* Conectando compuertas y enviando peticiones en paralelo...")
 
+    # Buscamos de forma asíncrona el rendimiento de ambos rivales
     stats_local = await buscar_datos_equipo(eq_local)
+    await msg.edit_text(f"⏳ *[█████░░░░░] 50%* Datos de {eq_local} procesados por Consenso. Extrayendo rival...")
+    
     stats_visit = await buscar_datos_equipo(eq_visit)
+    await msg.edit_text("⏳ *[r████████░░] 80%* Operando matrices Poisson de Python y redactando informe táctico...")
 
+    # Ejecutamos las ecuaciones matemáticas en Python
     estadisticas = calcular_probabilidades(stats_local, stats_visit)
     corners_avg = round((stats_local['corners'] + stats_visit['corners']) / 2, 1)
     tarjetas_avg = round((stats_local['tarjetas'] + stats_visit['tarjetas']) / 2, 1)
@@ -296,7 +279,7 @@ async def analizar_partido(message: types.Message):
     
     texto_final = (
         f"🆔 *INFORME PREMIUM METRIC-BET: #{partido_id} ({VERSION_ACTUAL})*\n⚽ *{stats_local['name']} vs {stats_visit['name']}*\n"
-        f"🔬 _Motor IA: {motor_usado}_\n\n"
+        f"🔬 _L: {stats_local['fuente']} | V: {stats_visit['fuente']} | Redacción: {motor_usado}_\n\n"
         f"📊 *PROYECCIONES MATEMÁTICAS (PYTHON):*\n"
         f"🔹 Goles Esperados (xG): `{estadisticas['xg_local']} - {estadisticas['xg_visitante']}`\n"
         f"📈 Probabilidad Over 2.5: `{estadisticas['prob_over_25']}%` | *Cuota:* `{estadisticas['cuota_over_minima']}`\n"
@@ -306,16 +289,15 @@ async def analizar_partido(message: types.Message):
         f"📥 Registrar cierre con: `/resultado {partido_id} GolesLocal-GolesVisitante`"
     )
     
-    # CONTROL DE SEGURIDAD ELITE: Truncado estricto para evitar el error MESSAGE_TOO_LONG de Telegram
     if len(texto_final) > 4000:
-        texto_final = texto_final[:3950] + "\n\n⚠️ _[Informe truncado por límite de caracteres de Telegram]_"
+        texto_final = texto_final[:3950] + "\n\n⚠️ _[Informe truncado por tamaño de Telegram]_"
         
     await msg.edit_text(texto_final, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
 
 @dp.message(Command("resultado"))
 async def registrar_resultado(message: types.Message):
     argumentos = message.text.replace("/resultado", "").strip().split()
-    if len(len(argumentos)) != 2: return await message.reply("⚠️ Usa: `/resultado ID Marcador` (Ej: `/resultado 1 2-1`)")
+    if len(argumentos) != 2: return await message.reply("⚠️ Usa: `/resultado ID Marcador`")
     prediccion_id, marcador = argumentos
     try:
         goles_l, goles_v = map(int, marcador.split("-"))
@@ -326,7 +308,6 @@ async def registrar_resultado(message: types.Message):
     except: 
         await message.reply("⚠️ Error de formato.")
 
-# --- 11. MANEJADOR DE SALUD PARA UPTIMEROBOT ---
 async def handles_ping_alive(request):
     return web.json_response({"status": "online", "version": VERSION_ACTUAL})
 
