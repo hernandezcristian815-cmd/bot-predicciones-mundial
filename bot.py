@@ -5,25 +5,27 @@ from telebot import TeleBot, types
 from scipy.stats import poisson
 
 # ----------------------------------------------------------------------
-# LECTURA DE CONFIGURACIÓN DESDE LAS VARIABLES DE ENTORNO EN RENDER
+# LECTURA DE CONFIGURACIÓN DESDE EL ENTORNO (ENVIRONMENT DE RENDER)
+# Con los nombres exactos provistos en tus capturas
 # ----------------------------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
 API_SPORTS_KEY = os.getenv("API_SPORTS_KEY")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
 
-# Variables de respaldo por si tu backend las consume en otra sección
+# Variables de respaldo estructuradas en tu configuración
 RESPALDO_API_KEY = os.getenv("RESPALDO_API_KEY")
 RESPALDO_API_URL = os.getenv("RESPALDO_API_URL")
 
-# Inicialización segura del bot de Telegram
+# Validación preventiva de inicialización en el servidor
 if not TELEGRAM_TOKEN:
-    raise ValueError("ERROR CRÍTICO: La variable 'TELEGRAM_TOKEN' no está configurada en Render.")
+    raise ValueError("ERROR CRÍTICO: La variable 'TELEGRAM_TOKEN' no se encuentra en el entorno de Render.")
 
 bot = TeleBot(TELEGRAM_TOKEN)
 
 # ----------------------------------------------------------------------
 # 1. BASE DE DATOS MAESTRA: LAS 48 SELECCIONES DEL MUNDIAL 2026
+# Nombres estandarizados en español según requerimiento
 # ----------------------------------------------------------------------
 TEAMS = {
     # CONMEBOL
@@ -82,7 +84,7 @@ TEAMS = {
 }
 
 # ----------------------------------------------------------------------
-# 2. CALENDARIO COMPLETO DEL MUNDIAL 2026
+# 2. CALENDARIO INICIAL DE PARTIDOS
 # ----------------------------------------------------------------------
 FIXTURES_BY_DATE = {
     "2026-06-11": [
@@ -119,7 +121,7 @@ def run_poisson_engine(xg_home, xg_away):
             
             if h > a: win_h += cell
             elif h == a: draw += cell
-            else: win_away += cell
+            else: win_a += cell
             
             if (h + a) <= 2.5:
                 prob_under25 += cell
@@ -136,7 +138,7 @@ def run_poisson_engine(xg_home, xg_away):
     }
 
 # ----------------------------------------------------------------------
-# 3. INTERFAZ DE FLUJO DE TELEGRAM
+# 3. MANEJADORES DE MENÚS Y CALLBACKS INTERACTIVOS
 # ----------------------------------------------------------------------
 @bot.message_handler(commands=['start', 'menu'])
 def send_calendar(message):
@@ -148,8 +150,8 @@ def send_calendar(message):
         
     bot.send_message(
         message.chat.id,
-        "🤖 *MUNDIAL IA PREDICTOR — CONTROL CENTRAL*\n\n"
-        "Selecciona una fecha para cargar los partidos disponibles del calendario:",
+        "🤖 *MUNDIAL IA PREDICTOR — ENTORNO EN RENDER*\n\n"
+        "Selecciona una fecha del torneo para listar los compromisos disponibles:",
         parse_mode="Markdown",
         reply_markup=keyboard
     )
@@ -166,10 +168,10 @@ def list_matches_by_date(call):
         btn_text = f"⚽ [{m['time']}] {home_name} vs {away_name}"
         keyboard.add(types.InlineKeyboardButton(text=btn_text, callback_data=f"analyze_{selected_date}_{m['id']}"))
         
-    keyboard.add(types.InlineKeyboardButton(text="⬅️ REGRESAR AL CALENDARIO", callback_data="back_cal"))
+    keyboard.add(types.InlineKeyboardButton(text="⬅️ VOLVER AL CALENDARIO", callback_data="back_cal"))
     
     bot.edit_message_text(
-        text=f"👇 *PARTIDOS PROGRAMADOS PARA EL {selected_date}:*\nSelecciona un encuentro para procesar:",
+        text=f"👇 *PARTIDOS DISPONIBLES ({selected_date}):*\nSelecciona un encuentro para proyectar analíticas de Opta:",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         parse_mode="Markdown",
@@ -199,7 +201,7 @@ def process_prediction_ui(call):
     
     res = run_poisson_engine(xg_home, xg_away)
     
-    # Diseño visual de Opta alineado simétricamente con strings de bloque fijo
+    # Renderización en bloques fijos emulando terminal deportiva
     opta_terminal_view = (
         f"📊 *TERMINAL IA — PROYECCIÓN ESTADÍSTICA*\n"
         f"`------------------------------------------`\n"
@@ -227,7 +229,7 @@ def process_prediction_ui(call):
         f" Total: *4.4* | Over 3.5 Tarjetas: *64%*\n"
         f" {make_visual_bar(64, '🟨', length=18)}\n"
         f"`------------------------------------------`\n"
-        f"🤖 _Análisis automatizado para creadores de contenido._"
+        f"🤖 _Filtros de variables cargados desde producción._"
     )
     
     keyboard = types.InlineKeyboardMarkup()
@@ -242,5 +244,5 @@ def process_prediction_ui(call):
     )
 
 if __name__ == '__main__':
-    print("🤖 Bot iniciado con variables seguras de Render. Escuchando...")
+    print("🚀 El bot de Telegram está escuchando de forma segura...")
     bot.infinity_polling()
