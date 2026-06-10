@@ -326,4 +326,4 @@ async def cmd_start(message: types.Message):
 async def analizar_partido(message: types.Message):
     argumentos = re.sub(r'^/analizar(@\w+)?\s+', '', message.text).strip()
     if " vs " not in argumentos: 
-        return await message.reply("⚠️ Usa:\n`/analizar Local vs Visitante`",
+        return await message.reply("⚠️ Usa:\n`/analizar Local vs Visitante`", 
