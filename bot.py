@@ -1,6 +1,6 @@
 # Autor: Cristian Rafael Hernández Galvis
 # Código Estudiantil: 20251025024
-# Proyecto: Value Betting Engine Premium v16.2.2-GROQ - Doble Oportunidad y Líneas Over/Under (+/-)
+# Proyecto: Value Betting Engine Premium v16.2.2-MUNDIAL - Doble Oportunidad, Líneas +/- y Fechas
 
 import os
 import json
@@ -8,22 +8,22 @@ import sqlite3
 import re
 import asyncio
 import aiohttp
+import datetime
 
 # --- OPTIMIZACIÓN DE INSTALACIÓN PARA RENDER ---
 os.environ["PIP_NO_CACHE_DIR"] = "off"
 os.environ["PIP_PREFER_BINARY"] = "1"
 
-from datetime import datetime
 from google import genai
 from scipy.stats import poisson
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- 1. CONFIGURACIÓN, CREDENCIALES Y CONSTANTES ---
-VERSION_ACTUAL = "v16.2.2-GROQ" 
+VERSION_ACTUAL = "v16.2.2-MUNDIAL" 
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
@@ -43,83 +43,96 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
 DB_NAME = "apuestas.db"
-LIGAS_MAPA = {"WC", "CL", "PL", "ELC", "FL1", "BL1", "SA", "PD", "PPL", "DED", "BSA"}
 
 # --- DATA MAESTRA: LAS 48 SELECCIONES DEL MUNDIAL 2026 CALIBRADAS ---
 MUNDIAL_48_TEAMS = {
     # CONMEBOL
-    "argentina": {"name": "Argentina", "attack": 2.30, "defense": 0.50, "ranking": 1, "corners": 6.2, "tarjetas": 1.5, "forma": "V-V-E-V-V"},
-    "brasil": {"name": "Brasil", "attack": 1.90, "defense": 0.80, "ranking": 5, "corners": 5.8, "tarjetas": 2.1, "forma": "V-E-D-V-E"},
-    "colombia": {"name": "Colombia", "attack": 1.80, "defense": 0.70, "ranking": 12, "corners": 5.5, "tarjetas": 2.3, "forma": "V-V-E-V-V"},
-    "uruguay": {"name": "Uruguay", "attack": 1.80, "defense": 0.80, "ranking": 11, "corners": 5.2, "tarjetas": 2.4, "forma": "E-V-D-V-V"},
-    "ecuador": {"name": "Ecuador", "attack": 1.20, "defense": 0.70, "ranking": 31, "corners": 4.8, "tarjetas": 2.0, "forma": "V-E-V-D-E"},
-    "venezuela": {"name": "Venezuela", "attack": 1.10, "defense": 1.00, "ranking": 54, "corners": 4.2, "tarjetas": 2.5, "forma": "E-D-V-E-E"},
-    "chile": {"name": "Chile", "attack": 1.00, "defense": 1.10, "ranking": 42, "corners": 4.5, "tarjetas": 2.6, "forma": "D-E-V-D-D"},
-    
+    "ARG": {"name": "Argentina", "attack": 2.30, "defense": 0.50, "ranking": 1, "corners": 6.2, "tarjetas": 1.5, "forma": "V-V-E-V-V"},
+    "BRA": {"name": "Brasil", "attack": 1.90, "defense": 0.80, "ranking": 5, "corners": 5.8, "tarjetas": 2.1, "forma": "V-E-D-V-E"},
+    "COL": {"name": "Colombia", "attack": 1.80, "defense": 0.70, "ranking": 12, "corners": 5.5, "tarjetas": 2.3, "forma": "V-V-E-V-V"},
+    "URU": {"name": "Uruguay", "attack": 1.80, "defense": 0.80, "ranking": 11, "corners": 5.2, "tarjetas": 2.4, "forma": "E-V-D-V-V"},
+    "ECU": {"name": "Ecuador", "attack": 1.20, "defense": 0.70, "ranking": 31, "corners": 4.8, "tarjetas": 2.0, "forma": "V-E-V-D-E"},
+    "VEN": {"name": "Venezuela", "attack": 1.10, "defense": 1.00, "ranking": 54, "corners": 4.2, "tarjetas": 2.5, "forma": "E-D-V-E-E"},
+    "CHI": {"name": "Chile", "attack": 1.00, "defense": 1.10, "ranking": 42, "corners": 4.5, "tarjetas": 2.6, "forma": "D-E-V-D-D"},
     # UEFA
-    "francia": {"name": "Francia", "attack": 2.10, "defense": 0.60, "ranking": 2, "corners": 6.0, "tarjetas": 1.4, "forma": "V-V-D-V-V"},
-    "españa": {"name": "España", "attack": 2.00, "defense": 0.70, "ranking": 3, "corners": 6.5, "tarjetas": 1.8, "forma": "V-V-E-V-V"},
-    "inglaterra": {"name": "Inglaterra", "attack": 1.90, "defense": 0.70, "ranking": 4, "corners": 5.9, "tarjetas": 1.2, "forma": "E-V-V-D-V"},
-    "portugal": {"name": "Portugal", "attack": 2.20, "defense": 0.80, "ranking": 7, "corners": 6.1, "tarjetas": 1.9, "forma": "V-V-E-V-D"},
-    "países bajos": {"name": "Países Bajos", "attack": 1.70, "defense": 0.80, "ranking": 8, "corners": 5.4, "tarjetas": 1.7, "forma": "V-D-V-E-V"},
-    "italia": {"name": "Italia", "attack": 1.50, "defense": 0.70, "ranking": 9, "corners": 5.0, "tarjetas": 2.2, "forma": "E-V-E-D-V"},
-    "croacia": {"name": "Croacia", "attack": 1.40, "defense": 0.80, "ranking": 10, "corners": 4.8, "tarjetas": 1.6, "forma": "E-E-V-D-V"},
-    "alemania": {"name": "Alemania", "attack": 1.80, "defense": 0.90, "ranking": 16, "corners": 5.7, "tarjetas": 2.0, "forma": "V-E-V-V-D"},
-    "suiza": {"name": "Suiza", "attack": 1.30, "defense": 1.00, "ranking": 19, "corners": 4.6, "tarjetas": 2.1, "forma": "E-V-D-E-V"},
-    "dinamarca": {"name": "Dinamarca", "attack": 1.40, "defense": 1.00, "ranking": 21, "corners": 4.9, "tarjetas": 1.5, "forma": "D-V-E-V-E"},
-    "ucrania": {"name": "Ucrania", "attack": 1.30, "defense": 1.10, "ranking": 22, "corners": 4.7, "tarjetas": 2.2, "forma": "V-D-E-E-V"},
-    "austria": {"name": "Austria", "attack": 1.50, "defense": 1.00, "ranking": 25, "corners": 5.1, "tarjetas": 2.4, "forma": "V-E-V-D-V"},
-    "suecia": {"name": "Suecia", "attack": 1.50, "defense": 1.20, "ranking": 28, "corners": 5.3, "tarjetas": 1.9, "forma": "E-V-D-V-D"},
-    "hungría": {"name": "Hungría", "attack": 1.20, "defense": 1.10, "ranking": 27, "corners": 4.4, "tarjetas": 2.0, "forma": "D-E-V-V-E"},
-    "turquía": {"name": "Turquía", "attack": 1.40, "defense": 1.20, "ranking": 40, "corners": 4.9, "tarjetas": 2.5, "forma": "V-D-D-E-V"},
-    
+    "FRA": {"name": "Francia", "attack": 2.10, "defense": 0.60, "ranking": 2, "corners": 6.0, "tarjetas": 1.4, "forma": "V-V-D-V-V"},
+    "ESP": {"name": "España", "attack": 2.00, "defense": 0.70, "ranking": 3, "corners": 6.5, "tarjetas": 1.8, "forma": "V-V-E-V-V"},
+    "ENG": {"name": "Inglaterra", "attack": 1.90, "defense": 0.70, "ranking": 4, "corners": 5.9, "tarjetas": 1.2, "forma": "E-V-V-D-V"},
+    "POR": {"name": "Portugal", "attack": 2.20, "defense": 0.80, "ranking": 7, "corners": 6.1, "tarjetas": 1.9, "forma": "V-V-E-V-D"},
+    "NED": {"name": "Países Bajos", "attack": 1.70, "defense": 0.80, "ranking": 8, "corners": 5.4, "tarjetas": 1.7, "forma": "V-D-V-E-V"},
+    "ITA": {"name": "Italia", "attack": 1.50, "defense": 0.70, "ranking": 9, "corners": 5.0, "tarjetas": 2.2, "forma": "E-V-E-D-V"},
+    "CRO": {"name": "Croacia", "attack": 1.40, "defense": 0.80, "ranking": 10, "corners": 4.8, "tarjetas": 1.6, "forma": "E-E-V-D-V"},
+    "GER": {"name": "Alemania", "attack": 1.80, "defense": 0.90, "ranking": 16, "corners": 5.7, "tarjetas": 2.0, "forma": "V-E-V-V-D"},
+    "SUI": {"name": "Suiza", "attack": 1.30, "defense": 1.00, "ranking": 19, "corners": 4.6, "tarjetas": 2.1, "forma": "E-V-D-E-V"},
+    "DEN": {"name": "Dinamarca", "attack": 1.40, "defense": 1.00, "ranking": 21, "corners": 4.9, "tarjetas": 1.5, "forma": "D-V-E-V-E"},
+    "UKR": {"name": "Ucrania", "attack": 1.30, "defense": 1.10, "ranking": 22, "corners": 4.7, "tarjetas": 2.2, "forma": "V-D-E-E-V"},
+    "AUT": {"name": "Austria", "attack": 1.50, "defense": 1.00, "ranking": 25, "corners": 5.1, "tarjetas": 2.4, "forma": "V-E-V-D-V"},
+    "SWE": {"name": "Suecia", "attack": 1.50, "defense": 1.20, "ranking": 28, "corners": 5.3, "tarjetas": 1.9, "forma": "E-V-D-V-D"},
+    "HUN": {"name": "Hungría", "attack": 1.20, "defense": 1.10, "ranking": 27, "corners": 4.4, "tarjetas": 2.0, "forma": "D-E-V-V-E"},
+    "TUR": {"name": "Turquía", "attack": 1.40, "defense": 1.20, "ranking": 40, "corners": 4.9, "tarjetas": 2.5, "forma": "V-D-D-E-V"},
     # CONCACAF
-    "estados unidos": {"name": "Estados Unidos", "attack": 1.40, "defense": 1.00, "ranking": 14, "corners": 5.0, "tarjetas": 1.8, "forma": "V-E-D-V-V"},
-    "méxico": {"name": "México", "attack": 1.30, "defense": 1.10, "ranking": 15, "corners": 4.8, "tarjetas": 2.3, "forma": "E-V-D-E-V"},
-    "canadá": {"name": "Canadá", "attack": 1.40, "defense": 1.10, "ranking": 49, "corners": 5.1, "tarjetas": 2.1, "forma": "V-V-D-E-D"},
-    "panamá": {"name": "Panamá", "attack": 1.20, "defense": 1.20, "ranking": 45, "corners": 4.4, "tarjetas": 2.2, "forma": "E-V-D-V-D"},
-    "costa rica": {"name": "Costa Rica", "attack": 1.00, "defense": 1.30, "ranking": 52, "corners": 4.0, "tarjetas": 2.4, "forma": "D-E-E-V-D"},
-    "jamaica": {"name": "Jamaica", "attack": 1.10, "defense": 1.20, "ranking": 55, "corners": 4.2, "tarjetas": 2.5, "forma": "V-D-E-D-V"},
-    
+    "USA": {"name": "Estados Unidos", "attack": 1.40, "defense": 1.00, "ranking": 14, "corners": 5.0, "tarjetas": 1.8, "forma": "V-E-D-V-V"},
+    "MEX": {"name": "México", "attack": 1.30, "defense": 1.10, "ranking": 15, "corners": 4.8, "tarjetas": 2.3, "forma": "E-V-D-E-V"},
+    "CAN": {"name": "Canadá", "attack": 1.40, "defense": 1.10, "ranking": 49, "corners": 5.1, "tarjetas": 2.1, "forma": "V-V-D-E-D"},
+    "PAN": {"name": "Panamá", "attack": 1.20, "defense": 1.20, "ranking": 45, "corners": 4.4, "tarjetas": 2.2, "forma": "E-V-D-V-D"},
+    "CRC": {"name": "Costa Rica", "attack": 1.00, "defense": 1.30, "ranking": 52, "corners": 4.0, "tarjetas": 2.4, "forma": "D-E-E-V-D"},
+    "JAM": {"name": "Jamaica", "attack": 1.10, "defense": 1.20, "ranking": 55, "corners": 4.2, "tarjetas": 2.5, "forma": "V-D-E-D-V"},
     # CAF (ÁFRICA)
-    "marruecos": {"name": "Marruecos", "attack": 1.60, "defense": 0.70, "ranking": 13, "corners": 5.4, "tarjetas": 1.9, "forma": "V-V-E-D-V"},
-    "senegal": {"name": "Senegal", "attack": 1.50, "defense": 0.80, "ranking": 17, "corners": 5.1, "tarjetas": 2.0, "forma": "V-E-V-V-D"},
-    "nigeria": {"name": "Nigeria", "attack": 1.60, "defense": 1.10, "ranking": 28, "corners": 5.3, "tarjetas": 2.2, "forma": "E-D-V-V-D"},
-    "egipto": {"name": "Egipto", "attack": 1.40, "defense": 0.90, "ranking": 36, "corners": 4.7, "tarjetas": 2.1, "forma": "V-V-E-D-E"},
-    "costa de marfil": {"name": "Costa de Marfil", "attack": 1.40, "defense": 1.00, "ranking": 39, "corners": 4.8, "tarjetas": 2.3, "forma": "V-E-D-V-V"},
-    "túnez": {"name": "Túnez", "attack": 1.00, "defense": 0.90, "ranking": 41, "corners": 4.1, "tarjetas": 1.8, "forma": "E-E-V-D-E"},
-    "argelia": {"name": "Argelia", "attack": 1.40, "defense": 1.00, "ranking": 43, "corners": 4.9, "tarjetas": 2.0, "forma": "V-D-E-V-D"},
-    "camerún": {"name": "Camerún", "attack": 1.20, "defense": 1.10, "ranking": 46, "corners": 4.5, "tarjetas": 2.4, "forma": "D-V-E-E-D"},
-    "malí": {"name": "Malí", "attack": 1.10, "defense": 1.00, "ranking": 47, "corners": 4.3, "tarjetas": 2.1, "forma": "E-V-D-E-E"},
-    "sudáfrica": {"name": "Sudáfrica", "attack": 1.00, "defense": 1.20, "ranking": 59, "corners": 4.0, "tarjetas": 2.2, "forma": "D-E-V-D-V"},
-    
+    "MAR": {"name": "Marruecos", "attack": 1.60, "defense": 0.70, "ranking": 13, "corners": 5.4, "tarjetas": 1.9, "forma": "V-V-E-D-V"},
+    "SEN": {"name": "Senegal", "attack": 1.50, "defense": 0.80, "ranking": 17, "corners": 5.1, "tarjetas": 2.0, "forma": "V-E-V-V-D"},
+    "NGA": {"name": "Nigeria", "attack": 1.60, "defense": 1.10, "ranking": 28, "corners": 5.3, "tarjetas": 2.2, "forma": "E-D-V-V-D"},
+    "EGY": {"name": "Egipto", "attack": 1.40, "defense": 0.90, "ranking": 36, "corners": 4.7, "tarjetas": 2.1, "forma": "V-V-E-D-E"},
+    "CIV": {"name": "Costa de Marfil", "attack": 1.40, "defense": 1.00, "ranking": 39, "corners": 4.8, "tarjetas": 2.3, "forma": "V-E-D-V-V"},
+    "TUN": {"name": "Túnez", "attack": 1.00, "defense": 0.90, "ranking": 41, "corners": 4.1, "tarjetas": 1.8, "forma": "E-E-V-D-E"},
+    "ALG": {"name": "Argelia", "attack": 1.40, "defense": 1.00, "ranking": 43, "corners": 4.9, "tarjetas": 2.0, "forma": "V-D-E-V-D"},
+    "CMR": {"name": "Camerún", "attack": 1.20, "defense": 1.10, "ranking": 46, "corners": 4.5, "tarjetas": 2.4, "forma": "D-V-E-E-D"},
+    "MLI": {"name": "Malí", "attack": 1.10, "defense": 1.00, "ranking": 47, "corners": 4.3, "tarjetas": 2.1, "forma": "E-V-D-E-E"},
+    "RSA": {"name": "Sudáfrica", "attack": 1.00, "defense": 1.20, "ranking": 59, "corners": 4.0, "tarjetas": 2.2, "forma": "D-E-V-D-V"},
     # AFC (ASIA)
-    "japón": {"name": "Japón", "attack": 1.80, "defense": 0.90, "ranking": 18, "corners": 5.6, "tarjetas": 1.3, "forma": "V-V-E-V-D"},
-    "irán": {"name": "Irán", "attack": 1.50, "defense": 1.00, "ranking": 20, "corners": 4.8, "tarjetas": 2.1, "forma": "V-E-V-D-V"},
-    "corea del sur": {"name": "Corea del Sur", "attack": 1.60, "defense": 1.10, "ranking": 23, "corners": 5.1, "tarjetas": 1.6, "forma": "E-V-V-D-E"},
-    "australia": {"name": "Australia", "attack": 1.30, "defense": 0.90, "ranking": 24, "corners": 5.0, "tarjetas": 1.9, "forma": "V-D-E-V-E"},
-    "catar": {"name": "Catar", "attack": 1.20, "defense": 1.30, "ranking": 34, "corners": 4.3, "tarjetas": 2.0, "forma": "D-V-D-E-E"},
-    "irak": {"name": "Irak", "attack": 1.20, "defense": 1.20, "ranking": 58, "corners": 4.4, "tarjetas": 2.4, "forma": "E-V-D-D-V"},
-    "arabia saudita": {"name": "Arabia Saudita", "attack": 1.10, "defense": 1.20, "ranking": 56, "corners": 4.2, "tarjetas": 2.2, "forma": "D-E-E-V-D"},
-    "uzbekistán": {"name": "Uzbekistán", "attack": 1.10, "defense": 1.10, "ranking": 64, "corners": 4.1, "tarjetas": 1.9, "forma": "E-V-D-E-V"},
-    
-    # OFC (OCEANÍA)
-    "nueva zelanda": {"name": "Nueva Zelanda", "attack": 0.90, "defense": 1.40, "ranking": 85, "corners": 3.8, "tarjetas": 2.0, "forma": "D-D-E-V-D"}
+    "JPN": {"name": "Japón", "attack": 1.80, "defense": 0.90, "ranking": 18, "corners": 5.6, "tarjetas": 1.3, "forma": "V-V-E-V-D"},
+    "IRN": {"name": "Irán", "attack": 1.50, "defense": 1.00, "ranking": 20, "corners": 4.8, "tarjetas": 2.1, "forma": "V-E-V-D-V"},
+    "KOR": {"name": "Corea del Sur", "attack": 1.60, "defense": 1.10, "ranking": 23, "corners": 5.1, "tarjetas": 1.6, "forma": "E-V-V-D-E"},
+    "AUS": {"name": "Australia", "attack": 1.30, "defense": 0.90, "ranking": 24, "corners": 5.0, "tarjetas": 1.9, "forma": "V-D-E-V-E"},
+    "QAT": {"name": "Catar", "attack": 1.20, "defense": 1.30, "ranking": 34, "corners": 4.3, "tarjetas": 2.0, "forma": "D-V-D-E-E"},
+    "IRQ": {"name": "Irak", "attack": 1.20, "defense": 1.20, "ranking": 58, "corners": 4.4, "tarjetas": 2.4, "forma": "E-V-D-D-V"},
+    "KSA": {"name": "Arabia Saudita", "attack": 1.10, "defense": 1.20, "ranking": 56, "corners": 4.2, "tarjetas": 2.2, "forma": "D-E-E-V-D"},
+    "UZB": {"name": "Uzbekistán", "attack": 1.10, "defense": 1.10, "ranking": 64, "corners": 4.1, "tarjetas": 1.9, "forma": "E-V-D-E-V"},
+    # OCEANÍA
+    "NZL": {"name": "Nueva Zelanda", "attack": 0.90, "defense": 1.40, "ranking": 85, "corners": 3.8, "tarjetas": 2.0, "forma": "D-D-E-V-D"}
 }
 
-# --- 2. GENERADOR DE TECLADO INTERACTIVO ---
+# --- CALENDARIO DEL MUNDIAL MAQUETADO POR FECHAS ---
+FIXTURES_BY_DATE = {
+    "2026-06-11": [
+        {"id": "M01", "home": "USA", "away": "MEX", "time": "15:00", "stage": "Grupo A (Inaugural)"},
+        {"id": "M02", "home": "CAN", "away": "PAN", "time": "19:00", "stage": "Grupo B"}
+    ],
+    "2026-06-12": [
+        {"id": "M03", "home": "ARG", "away": "GER", "time": "13:00", "stage": "Grupo C"},
+        {"id": "M04", "home": "COL", "away": "ITA", "time": "17:00", "stage": "Grupo C"}
+    ],
+    "2026-06-13": [
+        {"id": "M05", "home": "BRA", "away": "JPN", "time": "14:00", "stage": "Grupo E"},
+        {"id": "M06", "home": "ESP", "away": "MAR", "time": "18:00", "stage": "Grupo F"}
+    ]
+}
+
+def make_visual_bar(percentage: float, emoji="🟩", length=14) -> str:
+    filled = int((percentage / 100) * length)
+    filled = max(1, min(filled, length))
+    empty = length - filled
+    return f"{emoji * filled}{'⬛' * empty}"
+
+# --- 2. GENERADOR DE TECLADO INTERACTIVO BASE ---
 def obtener_teclado_interactivo():
     builder = InlineKeyboardBuilder()
     builder.row(
-        types.InlineKeyboardButton(text="📅 Partidos de Hoy", callback_data="ver_partidos_hoy"),
-        types.InlineKeyboardButton(text="📊 Analizar Partido", switch_inline_query_current_chat="/analizar ")
+        types.InlineKeyboardButton(text="📅 Partidos del Mundial", callback_data="ver_calendario_fechas"),
+        types.InlineKeyboardButton(text="📊 Analizar Libre", switch_inline_query_current_chat="/analizar ")
     )
     builder.row(
         types.InlineKeyboardButton(text="🔍 Buscar Equipo", switch_inline_query_current_chat="/equipo "),
-        types.InlineKeyboardButton(text="📈 Ver Efectividad", callback_data="ver_efectividad_ia")
-    )
-    builder.row(
-        types.InlineKeyboardButton(text=f"⚙️ Engine: {VERSION_ACTUAL}", callback_data="info_version")
+        types.InlineKeyboardButton(text="⚙️ Engine", callback_data="info_version")
     )
     return builder.as_markup()
 
@@ -156,7 +169,7 @@ def registrar_resultado_db(prediccion_id, goles_l, goles_v):
     conn.close()
     return filas_afectadas > 0
 
-# --- 4. PIPELINE DE EXTRACCIÓN ESTADÍSTICA (GROQ INVESTIGA -> GEMINI AUDITA) ---
+# --- 4. PIPELINE DE EXTRACCIÓN ESTADÍSTICA EXTERNA ---
 async def pipeline_auditoria_invertida(nombre_equipo):
     prompt_groq = f"""
     Investigate the last 10 official competitive matches of the football team: "{nombre_equipo}".
@@ -209,25 +222,23 @@ async def pipeline_auditoria_invertida(nombre_equipo):
         except:
             return None
 
-# --- 5. BUSCADOR INTEGRADO CON MUNDIAL 48 Y ASIGNADOR DE CONTEXTO ---
+# --- 5. BUSCADOR INTELIGENTE CON PRIORIDAD MUNDIALISTA ---
 async def buscar_datos_equipo(nombre_equipo):
     nombre_limpio = nombre_equipo.strip()
-    key_busqueda = nombre_limpio.lower()
     
-    # 1. Comprobación de contingencia en la Base de Datos Maestra Local de 48 selecciones
-    if key_busqueda in MUNDIAL_48_TEAMS:
-        team_data = MUNDIAL_48_TEAMS[key_busqueda]
-        return {
-            'name': team_data['name'],
-            'gf': team_data['attack'],
-            'gc': team_data['defense'],
-            'corners': team_data['corners'],
-            'tarjetas': team_data['tarjetas'],
-            'forma': team_data['forma'],
-            'fuente': "Engine Base Mundial 48 Calibrado"
-        }
-        
-    # 2. Si no es selección del mundial, corre el flujo normal del pipeline de red
+    # Verificación de abreviaturas del mundial (Ej: ARG, COL) o coincidencia por nombre completo
+    for key, value in MUNDIAL_48_TEAMS.items():
+        if nombre_limpio.upper() == key or nombre_limpio.lower() == value['name'].lower():
+            return {
+                'name': value['name'],
+                'gf': value['attack'],
+                'gc': value['defense'],
+                'corners': value['corners'],
+                'tarjetas': value['tarjetas'],
+                'forma': value['forma'],
+                'fuente': "Engine Base Mundial 28 Calibrado"
+            }
+            
     resultado_pipeline = await pipeline_auditoria_invertida(nombre_limpio)
     if resultado_pipeline:
         data, fuente = resultado_pipeline
@@ -241,16 +252,7 @@ async def buscar_datos_equipo(nombre_equipo):
             'fuente': fuente
         }
     
-    # 3. Resguardo de emergencia por contexto amplio general
-    es_elite = any(x in key_busqueda for x in ["madrid", "city", "barcelona", "bayern"])
-    es_debil = any(x in key_busqueda for x in ["islandia", "jordania", "bolivia", "andorra", "malta"])
-    
-    gf_emergency = 2.10 if es_elite else (0.80 if es_debil else 1.40)
-    gc_emergency = 0.65 if es_elite else (1.80 if es_debil else 1.20)
-    corners_emergency = 5.8 if es_elite else (3.5 if es_debil else 4.5)
-    forma_emergency = "V-V-E-V-V" if es_elite else ("D-D-E-D-V" if es_debil else "E-V-E-D-V")
-    
-    return {"name": nombre_limpio, "gf": gf_emergency, "gc": gc_emergency, "corners": corners_emergency, "tarjetas": 2.0, "forma": forma_emergency, "fuente": "Modelado Dinámico Contextual"}
+    return {"name": nombre_limpio, "gf": 1.40, "gc": 1.10, "corners": 4.5, "tarjetas": 2.0, "forma": "E-V-D-E-V", "fuente": "Modelado Contextual"}
 
 # --- 6. PROCESAMIENTO MATEMÁTICO PURO (POISSON) ---
 def calcular_probabilidades(local_stats, visit_stats):
@@ -270,7 +272,7 @@ def calcular_probabilidades(local_stats, visit_stats):
         "cuota_over_minima": round(100 / (p_over if p_over > 0 else 1) * 1.05, 2)
     }
 
-# --- 7. REDACCIÓN COGNITIVA ORIENTADA A DOBLE OPORTUNIDAD, CÓRNERS Y TARJETAS (+/-) ---
+# --- 7. REDACCIÓN COGNITIVA ASÍNCRONA ---
 async def generar_informe_scouting_ia(estadisticas, local_stats, visit_stats, corners, tarjetas):
     favorito = local_stats['name'] if estadisticas['xg_local'] >= estadisticas['xg_visitante'] else visit_stats['name']
     
@@ -284,10 +286,10 @@ async def generar_informe_scouting_ia(estadisticas, local_stats, visit_stats, co
     Formatea la salida estrictamente en Markdown limpio usando ## para los títulos:
     ## 📊 1. ANÁLISIS SENSORIAL Y CONTEXTUAL: Explica la ventaja táctica del favorito ({favorito}) basándote en los xG y la racha.
     ## 🎯 2. RECOMENDACIÓN PREMIUM (CREA TU APUESTA): Estructura exactamente estos tres picks explicados de manera concisa:
-       - Mercado 1 (Doble Oportunidad): {favorito} o Empate (Explicar el porqué).
+       - Mercado 1 (Doble Oportunidad): {favorito} o Empate.
        - Mercado 2 (Córners / Tiros de esquina): Definir si apostar "Más de" o "Menos de" evaluando la línea base de {corners}.
        - Mercado 3 (Tarjetas): Definir si apostar "Más de" o "Menos de" evaluando la línea base de {tarjetas}.
-    Nota: Sé ultra conciso. No saludes, no uses introducciones largas. Ve directo a las secciones.
+    Nota: Sé ultra conciso. Ve directo a las secciones.
     """
     try:
         loop = asyncio.get_event_loop()
@@ -313,17 +315,136 @@ async def generar_informe_scouting_ia(estadisticas, local_stats, visit_stats, co
                         res_data = await response.json()
                         return res_data['choices'][0]['message']['content'].strip(), f"Groq LPU ({MODELO_GROQ})"
         except: pass
-    return "⚠️ El módulo de redacción táctica final no pudo procesarse debido a restricciones temporales de tokens en los servidores externos.", "Predictor de Emergencia"
+    return "⚠️ El módulo de redacción táctica final no pudo procesarse debido a restricciones temporales de tokens.", "Predictor de Emergencia"
 
-# --- 8. MANEJADORES DE TELEGRAM ---
-
-@dp.message(Command("start"))
+# --- 8. MANEJADORES DE TELEGRAM (COMANDOS Y BOTONES) ---
+@dp.message(Command("start", "menu"))
 async def cmd_start(message: types.Message):
-    texto_bienvenida = f"🤖 *Value Betting Engine Premium Active*\n⚙️ *Versión:* `{VERSION_ACTUAL}`\n\nPipeline calibrado para Doble Oportunidad, +/- Córners y Tarjetas de forma inmune con base de datos del Mundial 2026."
+    texto_bienvenida = f"🤖 *Value Betting Engine Premium Active*\n⚙️ *Versión:* `{VERSION_ACTUAL}`\n\nPipeline calibrado para Doble Oportunidad, +/- Córners y Tarjetas del Mundial."
     await message.answer(texto_bienvenida, reply_markup=obtener_teclado_interactivo(), parse_mode="Markdown")
+
+@dp.callback_query(F.data == "ver_calendario_fechas")
+@dp.callback_query(F.data == "back_cal")
+async def show_dates_menu(callback: types.CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    for date_key in FIXTURES_BY_DATE.keys():
+        dt = datetime.datetime.strptime(date_key, "%Y-%m-%d")
+        nice_date = dt.strftime("%A, %d de %B").upper()
+        builder.row(types.InlineKeyboardButton(text=f"📅 {nice_date}", callback_data=f"date_{date_key}"))
+    
+    await callback.message.edit_text(
+        text="🤖 *MUNDIAL IA PREDICTOR — SELECCIÓN DE JORNADA*\n\nElige una fecha para listar los compromisos del día:",
+        parse_mode="Markdown", reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data.startswith("date_"))
+async def list_matches_by_date(callback: types.CallbackQuery):
+    selected_date = callback.data.split('_')[1]
+    matches = FIXTURES_BY_DATE.get(selected_date, [])
+    
+    builder = InlineKeyboardBuilder()
+    for m in matches:
+        home_name = MUNDIAL_48_TEAMS[m["home"]]["name"]
+        away_name = MUNDIAL_48_TEAMS[m["away"]]["name"]
+        btn_text = f"⚽ [{m['time']}] {home_name} vs {away_name}"
+        builder.row(types.InlineKeyboardButton(text=btn_text, callback_data=f"proc_{selected_date}_{m['id']}"))
+        
+    builder.row(types.InlineKeyboardButton(text="⬅️ JORNADAS", callback_data="back_cal"))
+    
+    await callback.message.edit_text(
+        text=f"👇 *PARTIDOS PROGRAMADOS PARA EL {selected_date}:*\nSelecciona un encuentro para correr el motor de Poisson:",
+        parse_mode="Markdown", reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data.startswith("proc_"))
+async def process_match_callback(callback: types.CallbackQuery):
+    _, date_key, match_id = callback.data.split('_')
+    match = next((m for m in FIXTURES_BY_DATE[date_key] if m["id"] == match_id), None)
+    await callback.message.edit_text("⏳ *[████░░░░░░] 40%* Corriendo simulación matemática mediante distribución de Poisson...")
+    
+    h_stats = MUNDIAL_48_TEAMS[match["home"]]
+    a_stats = MUNDIAL_48_TEAMS[match["away"]]
+    
+    await process_and_send_final_report(callback.message, h_stats, a_stats)
 
 @dp.message(Command("analizar"))
 async def analizar_partido(message: types.Message):
     argumentos = re.sub(r'^/analizar(@\w+)?\s+', '', message.text).strip()
     if " vs " not in argumentos: 
-        return await message.reply("⚠️ Usa:\n`/analizar Local vs Visitante`", 
+        return await message.reply("⚠️ Usa:\n`/analizar Local vs Visitante` (o selecciona un partido del menú)")
+    
+    eq_local, eq_visit = argumentos.split(" vs ")
+    msg = await message.reply("⏳ *[██░░░░░░░░] 20%* Extrayendo promedios numéricos mediante pipeline cruzado...")
+    
+    try:
+        stats_local = await buscar_datos_equipo(eq_local)
+        await asyncio.sleep(1.0)
+        stats_visit = await buscar_datos_equipo(eq_visit)
+        await process_and_send_final_report(msg, stats_local, stats_visit, is_edit=False)
+    except Exception as e:
+        await msg.answer(f"❌ Error en subproceso: {e}", reply_markup=obtener_teclado_interactivo())
+
+async def process_and_send_final_report(msg_obj: types.Message, stats_local, stats_visit, is_edit=True):
+    estadisticas = calcular_probabilidades(stats_local, stats_visit)
+    corners_avg = round((stats_local['corners'] + stats_visit['corners']) / 2, 1)
+    tarjetas_avg = round((stats_local['tarjetas'] + stats_visit['tarjetas']) / 2, 1)
+    
+    partido_id = guardar_prediccion(stats_local['name'], stats_visit['name'], estadisticas['prob_over_25'], estadisticas['prob_btts'])
+    informe_scouting, motor_usado = await generar_informe_scouting_ia(estadisticas, stats_local, stats_visit, corners_avg, tarjetas_avg)
+    
+    opta_terminal_view = (
+        f"📊 *TERMINAL IA — PROYECCIÓN ESTADÍSTICA*\n"
+        f"`------------------------------------------`\n"
+        f"🆔 *INFORME METRIC-BET: #{partido_id} ({VERSION_ACTUAL})*\n"
+        f"⚽ *{stats_local['name'].upper()} vs {stats_visit['name'].upper()}*\n"
+        f"🔬 _L: {stats_local['fuente']} | V: {stats_visit['fuente']}_\n"
+        f"`------------------------------------------`\n\n"
+        f"📈 *PROBABILIDADES MATEMÁTICAS (POISSON)*\n"
+        f" Local xG: `{estadisticas['xg_local']}` | Visita xG: `{estadisticas['xg_visitante']}`\n"
+        f" Prob Over 2.5: *{estadisticas['prob_over_25']}%* {make_visual_bar(estadisticas['prob_over_25'], '🟦')}\n"
+        f" Prob BTTS:     *{estadisticas['prob_btts']}%* {make_visual_bar(estadisticas['prob_btts'], '🟨')}\n\n"
+        f"🚩 *LÍNEAS BASE DE APUESTA PROYECTADAS*\n"
+        f" Tiros de Esquina:  `~{corners_avg}` \n"
+        f" Tarjetas Totales:  `~{tarjetas_avg}` \n\n"
+        f"🔬 *INFORME TÁCTICO DE SCOUTING ({motor_usado}):*\n\n{informe_scouting}\n\n"
+        f"`------------------------------------------`\n"
+        f"📥 Registrar cierre con: `/resultado {partido_id} GolesLocal-GolesVisitante`"
+    )
+    
+    if is_edit:
+        await msg_obj.edit_text(opta_terminal_view, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+    else:
+        await msg_obj.answer(opta_terminal_view, parse_mode="Markdown", reply_markup=obtener_teclado_interactivo())
+
+@dp.message(Command("resultado"))
+async def registrar_resultado(message: types.Message):
+    argumentos = message.text.replace("/resultado", "").strip().split()
+    if len(argumentos) != 2: 
+        return await message.reply("⚠️ Usa: `/resultado ID Marcador` (Ej: `/resultado 1 2-1`)")
+    prediccion_id, marcador = argumentos
+    try:
+        goles_l, goles_v = map(int, marcador.split("-"))
+        if registrar_resultado_db(prediccion_id, goles_l, goles_v):
+            await message.reply(f"✅ Marcador guardado: `{goles_l}-{goles_v}`.")
+        else: 
+            await message.reply("❌ ID inexistente.")
+    except: 
+        await message.reply("⚠️ Error de formato en el marcador.")
+
+async def handles_ping_alive(request):
+    return web.json_response({"status": "online", "version": VERSION_ACTUAL})
+
+async def on_startup(bot: Bot): 
+    inicializar_db()
+    await bot.set_webhook(WEBHOOK_URL)
+
+def main():
+    dp.startup.register(on_startup)
+    app = web.Application()
+    app.router.add_get("/", handles_ping_alive)
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+    web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+if __name__ == "__main__": 
+    main()
